@@ -96,8 +96,8 @@ class Video(models.Model):
             self.published_at = timezone.now()
             self.save()
 
-    def increment_view_count(self):
-        self.view_count = models.F("view_count") + 1
+    def increment_view_count(self, increment_by: int = 1):
+        self.view_count = models.F("view_count") + increment_by
         self.last_activity_at = timezone.now()
         self.save()
         self.refresh_from_db()
