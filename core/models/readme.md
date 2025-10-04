@@ -42,6 +42,24 @@ This module contains the core authentication and user management models for the 
 - [Model Relationships](#model-relationships)
 - [Use Cases](#use-cases)
 - [Key Features](#key-features)
+- [Overview](#overview)
+- [Models](#models)
+   - [TrendingVideo](#1-trendingvideo)
+   - [RecommendationCache](#2-recommendationcache)
+   - [SearchQuery](#3-searchquery)
+   - [PopularSearch](#4-popularsearch)
+   - [ChannelAnalytics](#5-channelanalytics)
+   - [VideoAnalytics](#6-videoanalytics)
+   - [UserWatchHistory](#7-userwatchhistory)
+- [Dependencies](#dependencies)
+- [Model Relationships](#model-relationships)
+- [Overview](#overview)
+- [Models](#models)
+   - [CreatorPayout](#1-creatorpayout)
+   - [RevenueShare](#2-revenueshare)
+   - [PayoutMethod](#3-payoutmethod)
+- [Dependencies](#dependencies)
+- [Model Relationships](#model-relationships)
 
 ---
 
@@ -4273,5 +4291,755 @@ User (Suspended) ──→ UserSuspension ←── User (Suspended By)
 - Fast moderator activity lookups
 - Optimized content moderation history access
 
---
+---
 
+# Analytics & Caching Models Documentation
+
+---
+
+## Overview
+This module provides comprehensive analytics tracking, caching mechanisms, and data aggregation for a video platform. It includes trending video calculations, personalized recommendations, search analytics, channel/video performance metrics, and user watch history tracking.
+
+---
+
+## Models
+
+### 1. TrendingVideo
+
+**Purpose:** Caches trending videos based on calculated scores, supporting regional and category-specific trending lists.
+
+**Table Name:** `trending_videos`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `video` | ForeignKey(Video) | NOT NULL, CASCADE | Reference to the trending video |
+| `rank` | IntegerField | NOT NULL | Position in trending list (1 = top) |
+| `score` | FloatField | NOT NULL | Calculated trending score based on views, velocity, engagement |
+| `category` | CharField(50) | Optional | Category-specific trending (e.g., "Gaming", "Music") |
+| `region` | CharField(2) | Default: "BD" | ISO country code for regional trending |
+| `date` | DateField | Indexed | Snapshot date for this trending entry |
+| `created_at` | DateTimeField | Auto | Timestamp when entry was created |
+
+#### Relationships
+- **Video:** Many-to-One via `video` field
+  - Related name: `trending_entries`
+  - CASCADE delete - removes trending entries when video deleted
+  - One video can appear in multiple trending lists (different dates/regions)
+
+#### Constraints
+- **Unique Together:** `[video, date, region]`
+  - Prevents duplicate entries for same video on same date in same region
+  - Allows same video to trend in different regions simultaneously
+
+#### Indexes
+- Single index on `date` - Fast filtering by date
+- Composite index on `(date, region, rank)` - Optimized trending list retrieval
+
+#### Meta Options
+- **Ordering:** `["date", "rank"]` - Chronological, then by rank
+- **DB Table:** `trending_videos`
+
+---
+
+### 2. RecommendationCache
+
+**Purpose:** Stores pre-calculated personalized video recommendations per user to reduce computation overhead.
+
+**Table Name:** `recommendation_caches`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `user` | ForeignKey(User) | NOT NULL, CASCADE | User receiving recommendations |
+| `video_ids` | JSONField | Default: [] | List of recommended video IDs (max 50) |
+| `context` | CharField(50) | Default: "home" | Recommendation context (home, watch_next, subscriptions) |
+| `algorithm_version` | CharField(20) | Default: "v1" | Version of recommendation algorithm used |
+| `score_threshold` | FloatField | Default: 0.0 | Minimum score threshold for recommendations |
+| `expires_at` | DateTimeField | Indexed | Cache expiration timestamp |
+| `created_at` | DateTimeField | Auto | When cache was created |
+| `updated_at` | DateTimeField | Auto | Last cache update timestamp |
+
+#### Relationships
+- **User:** Many-to-One via `user` field
+  - Related name: `recommendation_caches`
+  - CASCADE delete - removes cache when user deleted
+  - One user can have multiple caches for different contexts
+
+#### Constraints
+- **Unique Together:** `[user, context]`
+  - One cache per user per context
+  - Ensures cache consistency
+
+#### Indexes
+- Composite index on `(user, context)` - Fast cache lookup
+- Single index on `expires_at` - Efficient cleanup of expired caches
+
+#### Methods
+
+**`get_video_ids()`**
+- **Returns:** List of integers
+- **Purpose:** Safely retrieves video IDs as a list
+- **Logic:** Returns `video_ids` if it's a list, otherwise returns empty list
+
+**`set_video_ids(video_ids)`**
+- **Parameters:** `video_ids` (iterable)
+- **Purpose:** Sets video IDs with automatic limit enforcement
+- **Logic:** Converts to list and limits to 50 items
+
+#### Meta Options
+- **Ordering:** `["-updated_at"]` - Most recently updated first
+- **DB Table:** `recommendation_caches`
+
+---
+
+### 3. SearchQuery
+
+**Purpose:** Tracks individual search queries for analytics, autocomplete improvement, and user behavior analysis.
+
+**Table Name:** `search_queries`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `user` | ForeignKey(User) | NULL, SET_NULL | User who performed the search (optional) |
+| `query` | CharField(255) | Indexed | Original search query as entered |
+| `normalized_query` | CharField(255) | Indexed | Lowercase, trimmed version for grouping |
+| `result_count` | IntegerField | Default: 0 | Number of results returned |
+| `clicked_video` | ForeignKey(Video) | NULL, SET_NULL | Video clicked from results (if any) |
+| `click_position` | IntegerField | NULL, Optional | Position of clicked video in results (1-indexed) |
+| `session_id` | CharField(100) | Optional | Session identifier for anonymous tracking |
+| `ip_address` | GenericIPAddressField | NULL, Optional | IP address for analytics (IPv4/IPv6) |
+| `created_at` | DateTimeField | Auto, Indexed | Timestamp when search was performed |
+
+#### Relationships
+- **User:** Many-to-One via `user` field
+  - Related name: `search_queries`
+  - SET_NULL on delete - preserves search data for analytics
+  - Optional - supports anonymous searches
+
+- **Clicked Video:** Many-to-One via `clicked_video` field
+  - Related name: `search_clicks`
+  - SET_NULL on delete - preserves click data
+  - Tracks search effectiveness
+
+#### Indexes
+- Single index on `query` - Fast query lookup
+- Single index on `normalized_query` - Efficient grouping
+- Composite index on `(normalized_query, created_at)` - Trending searches
+- Composite index on `(user, created_at)` - User search history
+
+#### Methods
+
+**`save(*args, **kwargs)`** (Override)
+- **Purpose:** Auto-generates normalized query on save
+- **Logic:** 
+  - If `normalized_query` not set, creates it from `query`
+  - Converts to lowercase and strips whitespace
+  - Calls parent save method
+
+#### Meta Options
+- **Ordering:** `["-created_at"]` - Most recent searches first
+- **DB Table:** `search_queries`
+
+---
+
+### 4. PopularSearch
+
+**Purpose:** Aggregates search data to provide popular/trending searches for autocomplete and discovery features.
+
+**Table Name:** `popular_searches`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `query` | CharField(255) | Unique, Indexed | Normalized search query |
+| `search_count` | IntegerField | Default: 0 | Total number of times searched (all-time) |
+| `click_through_rate` | FloatField | Default: 0.0 | Percentage of searches resulting in clicks |
+| `daily_count` | IntegerField | Default: 0 | Searches in last 24 hours |
+| `weekly_count` | IntegerField | Default: 0 | Searches in last 7 days |
+| `monthly_count` | IntegerField | Default: 0 | Searches in last 30 days |
+| `last_searched_at` | DateTimeField | Auto | Most recent search timestamp |
+
+#### Constraints
+- **Unique:** `query` field
+  - One entry per unique search term
+  - Prevents duplicates
+
+#### Indexes
+- Descending index on `search_count` - Fast popular queries retrieval
+- Single index on `query` - Quick query lookup
+
+#### Meta Options
+- **Ordering:** `["-search_count"]` - Most popular first
+- **DB Table:** `popular_searches`
+
+---
+
+### 5. ChannelAnalytics
+
+**Purpose:** Daily aggregated analytics for channels, providing comprehensive performance metrics and insights.
+
+**Table Name:** `channel_analytics`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `channel` | ForeignKey(Channel) | NOT NULL, CASCADE | Channel being analyzed |
+| `date` | DateField | Indexed | Date of analytics snapshot |
+| `total_views` | IntegerField | Default: 0 | Total video views for the day |
+| `unique_viewers` | IntegerField | Default: 0 | Unique users who viewed content |
+| `total_watch_time_seconds` | BigIntegerField | Default: 0 | Total watch time across all videos |
+| `average_view_duration_seconds` | IntegerField | Default: 0 | Average time per view |
+| `likes` | IntegerField | Default: 0 | Total likes received |
+| `dislikes` | IntegerField | Default: 0 | Total dislikes received |
+| `comments` | IntegerField | Default: 0 | Total comments posted |
+| `shares` | IntegerField | Default: 0 | Total shares/forwards |
+| `new_subscribers` | IntegerField | Default: 0 | New subscriptions gained |
+| `unsubscribers` | IntegerField | Default: 0 | Subscriptions lost |
+| `net_subscriber_change` | IntegerField | Default: 0 | Net change (new - lost) |
+| `estimated_revenue_cents` | IntegerField | Default: 0 | Estimated revenue in cents |
+| `traffic_source_data` | JSONField | Default: {} | Breakdown of traffic sources (search, suggested, etc.) |
+| `created_at` | DateTimeField | Auto | When analytics record was created |
+
+#### Relationships
+- **Channel:** Many-to-One via `channel` field
+  - Related name: `analytics`
+  - CASCADE delete - removes analytics when channel deleted
+  - One channel has multiple daily analytics records
+
+#### Constraints
+- **Unique Together:** `[channel, date]`
+  - One analytics record per channel per day
+  - Prevents duplicate daily snapshots
+
+#### Indexes
+- Composite index on `(channel, date)` - Efficient time-series queries
+
+#### Properties
+
+**`estimated_revenue`** (property)
+- **Returns:** Float
+- **Purpose:** Converts revenue from cents to dollars
+- **Calculation:** `estimated_revenue_cents / 100`
+
+**`average_watch_time_minutes`** (property)
+- **Returns:** Float
+- **Purpose:** Converts watch time to minutes
+- **Calculation:** `average_view_duration_seconds / 60`
+
+#### Meta Options
+- **Ordering:** `["-date"]` - Most recent first
+- **DB Table:** `channel_analytics`
+
+---
+
+### 6. VideoAnalytics
+
+**Purpose:** Daily aggregated analytics for individual videos, tracking performance, engagement, and audience behavior.
+
+**Table Name:** `video_analytics`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `video` | ForeignKey(Video) | NOT NULL, CASCADE | Video being analyzed |
+| `date` | DateField | Indexed | Date of analytics snapshot |
+| `views` | IntegerField | Default: 0 | Total views for the day |
+| `unique_viewers` | IntegerField | Default: 0 | Unique users who viewed |
+| `watch_time_seconds` | BigIntegerField | Default: 0 | Total watch time |
+| `average_view_duration_seconds` | IntegerField | Default: 0 | Average time per view |
+| `average_percentage_viewed` | FloatField | Default: 0.0 | Average % of video watched |
+| `likes` | IntegerField | Default: 0 | Likes received |
+| `dislikes` | IntegerField | Default: 0 | Dislikes received |
+| `comments` | IntegerField | Default: 0 | Comments posted |
+| `shares` | IntegerField | Default: 0 | Shares/forwards |
+| `retention_curve` | JSONField | Default: [] | Audience retention at 5% intervals (list of floats) |
+| `demographics_data` | JSONField | Default: {} | Age, gender, location breakdown |
+| `traffic_sources` | JSONField | Default: {} | Where viewers came from |
+| `estimated_revenue_cents` | IntegerField | Default: 0 | Estimated revenue in cents |
+| `created_at` | DateTimeField | Auto | When analytics record was created |
+
+#### Relationships
+- **Video:** Many-to-One via `video` field
+  - Related name: `analytics`
+  - CASCADE delete - removes analytics when video deleted
+  - One video has multiple daily analytics records
+
+#### Constraints
+- **Unique Together:** `[video, date]`
+  - One analytics record per video per day
+  - Prevents duplicate daily snapshots
+
+#### Indexes
+- Composite index on `(video, date)` - Efficient time-series queries
+
+#### Properties
+
+**`estimated_revenue`** (property)
+- **Returns:** Float
+- **Purpose:** Converts revenue from cents to dollars
+- **Calculation:** `estimated_revenue_cents / 100`
+
+**`engagement_rate`** (property)
+- **Returns:** Float
+- **Purpose:** Calculates overall engagement percentage
+- **Calculation:** `(likes + dislikes + comments + shares) / views * 100`
+- **Edge Case:** Returns 0.0 if views is 0
+
+**`watch_time_hours`** (property)
+- **Returns:** Float
+- **Purpose:** Converts watch time to hours
+- **Calculation:** `watch_time_seconds / 3600`
+
+#### Meta Options
+- **Ordering:** `["-date"]` - Most recent first
+- **DB Table:** `video_analytics`
+
+---
+
+### 7. UserWatchHistory
+
+**Purpose:** Tracks user viewing behavior for recommendations, resume playback, and personalization.
+
+**Table Name:** `user_watch_history`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `user` | ForeignKey(User) | NOT NULL, CASCADE | User who watched the video |
+| `video` | ForeignKey(Video) | NOT NULL, CASCADE | Video that was watched |
+| `watch_percentage` | FloatField | Default: 0.0 | Percentage of video watched (0-100) |
+| `watch_duration_seconds` | IntegerField | Default: 0 | Total time spent watching |
+| `completed` | BooleanField | Default: False | Whether video was completed (>90%) |
+| `last_position_seconds` | IntegerField | Default: 0 | Last playback position for resume |
+| `watched_at` | DateTimeField | Auto, Indexed | When video was first watched |
+| `updated_at` | DateTimeField | Auto | Last update timestamp |
+
+#### Relationships
+- **User:** Many-to-One via `user` field
+  - Related name: `watch_history`
+  - CASCADE delete - removes history when user deleted
+  - One user has many watch history entries
+
+- **Video:** Many-to-One via `video` field
+  - Related name: `watch_history_entries`
+  - CASCADE delete - removes history when video deleted
+  - One video has many watch history entries
+
+#### Constraints
+- **Unique Together:** `[user, video]`
+  - One watch history entry per user per video
+  - Updates existing entry on re-watch
+
+#### Indexes
+- Composite index on `(user, -watched_at)` - User's watch history (descending)
+- Composite index on `(video, watched_at)` - Video's viewer history
+
+#### Methods
+
+**`mark_completed()`**
+- **Purpose:** Automatically marks video as completed if watch percentage ≥ 90%
+- **Logic:** 
+  - Checks if `watch_percentage >= 90.0`
+  - Sets `completed = True`
+  - Saves only the `completed` field
+
+#### Properties
+
+**`watch_duration_minutes`** (property)
+- **Returns:** Float
+- **Purpose:** Converts watch duration to minutes
+- **Calculation:** `watch_duration_seconds / 60`
+
+#### Meta Options
+- **Ordering:** `["-watched_at"]` - Most recent first
+- **DB Table:** `user_watch_history`
+
+---
+
+## Dependencies
+
+### Required Imports
+```python
+from django.db import models
+```
+
+### Related Models
+- **Video:** Core video model
+  - Referenced by: `TrendingVideo`, `RecommendationCache` (via JSON), `SearchQuery`, `VideoAnalytics`, `UserWatchHistory`
+  
+- **User:** Authentication/user model
+  - Referenced by: `RecommendationCache`, `SearchQuery`, `ChannelAnalytics` (via Channel), `UserWatchHistory`
+  
+- **Channel:** Channel/creator model
+  - Referenced by: `ChannelAnalytics`
+
+---
+
+## Model Relationships
+
+### Entity Relationship Overview
+
+```
+User ──┬──→ RecommendationCache
+       ├──→ SearchQuery
+       ├──→ UserWatchHistory ──→ Video
+       └──→ Channel ──→ ChannelAnalytics
+
+Video ──┬──→ TrendingVideo
+        ├──→ VideoAnalytics
+        ├──→ UserWatchHistory
+        └──→ SearchQuery (clicked_video)
+
+SearchQuery ──→ PopularSearch (aggregated)
+```
+
+### Relationship Details
+
+#### **Caching & Recommendations**
+- **User → RecommendationCache:** One user has multiple caches (different contexts)
+- **Video → TrendingVideo:** One video can appear in multiple trending lists
+
+#### **Search Analytics**
+- **User → SearchQuery:** One user performs many searches
+- **Video → SearchQuery:** One video receives many search clicks
+- **SearchQuery → PopularSearch:** Many queries aggregated into popular searches
+
+#### **Performance Analytics**
+- **Channel → ChannelAnalytics:** One channel has daily analytics records
+- **Video → VideoAnalytics:** One video has daily analytics records
+
+#### **User Behavior**
+- **User → UserWatchHistory:** One user has many watch history entries
+- **Video → UserWatchHistory:** One video has many watch history entries
+
+---
+
+# Creator Monetization Models Documentation
+
+---
+
+## Overview
+This module manages creator monetization, revenue tracking, and payout processing for a video platform. It handles revenue attribution, payout calculations with fees and taxes, multiple payment methods, and comprehensive payout status tracking.
+
+---
+
+## Models
+
+### 1. CreatorPayout
+
+**Purpose:** Manages periodic revenue payouts to content creators, tracking revenue breakdown, fees, payment status, and processing lifecycle.
+
+**Table Name:** `creator_payouts`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `channel` | ForeignKey(Channel) | NOT NULL, CASCADE | Channel receiving the payout |
+| `period_start` | DateField | NOT NULL | Start date of payout period |
+| `period_end` | DateField | NOT NULL | End date of payout period |
+| `ad_revenue_cents` | IntegerField | Default: 0 | Revenue from advertisements (in cents) |
+| `premium_revenue_cents` | IntegerField | Default: 0 | Revenue from premium subscriptions (in cents) |
+| `total_revenue_cents` | IntegerField | Default: 0 | Total gross revenue (in cents) |
+| `platform_fee_cents` | IntegerField | Default: 0 | Platform commission fee (in cents) |
+| `payment_gateway_fee_cents` | IntegerField | Default: 0 | Payment processing fee (in cents) |
+| `tax_withheld_cents` | IntegerField | Default: 0 | Tax withholding amount (in cents) |
+| `net_payout_cents` | IntegerField | Default: 0 | Final payout amount after deductions (in cents) |
+| `currency` | CharField(3) | Default: "USD" | ISO 4217 currency code |
+| `status` | CharField(20) | Choices, Default: PENDING | Current payout status (from PayoutStatus) |
+| `payment_method` | CharField(100) | Optional | Payment method used for payout |
+| `payment_reference` | CharField(255) | Optional | External payment reference/transaction ID |
+| `created_at` | DateTimeField | Auto | When payout record was created |
+| `processed_at` | DateTimeField | NULL, Optional | When payout processing started |
+| `completed_at` | DateTimeField | NULL, Optional | When payout was successfully completed |
+| `notes` | TextField | Optional | Additional notes or comments |
+| `failure_reason` | TextField | Optional | Reason for payout failure (if applicable) |
+
+#### Relationships
+- **Channel:** Many-to-One via `channel` field
+  - Related name: `payouts`
+  - CASCADE delete - removes payouts when channel deleted
+  - One channel has multiple payout records (one per period)
+
+#### Constraints
+- **Unique Together:** `[channel, period_start, period_end]`
+  - One payout per channel per period
+  - Prevents duplicate payout records for same time period
+
+#### Indexes
+- Composite index on `(channel, status)` - Channel-specific payout filtering
+- Composite index on `(status, created_at)` - Status-based payout queries
+
+#### Properties
+
+**`payout_amount_display`** (property)
+- **Returns:** String
+- **Purpose:** Formats net payout amount with currency for display
+- **Format:** `"{currency} {amount:.2f}"` (e.g., "USD 1234.56")
+- **Calculation:** `net_payout_cents / 100` with 2 decimal places
+
+#### Meta Options
+- **Ordering:** `["-period_end", "-created_at"]` - Most recent period first, then by creation
+- **DB Table:** `creator_payouts`
+
+#### PayoutStatus Choices
+Referenced from `choices.PayoutStatus`:
+- `PENDING` - Awaiting processing
+- `PROCESSING` - Currently being processed
+- `COMPLETED` - Successfully paid out
+- `FAILED` - Payment failed
+- `CANCELLED` - Payout cancelled
+
+---
+
+### 2. RevenueShare
+
+**Purpose:** Tracks daily revenue attribution per video, calculating creator earnings based on configurable revenue share percentages.
+
+**Table Name:** `revenue_shares`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `video` | ForeignKey(Video) | NOT NULL, CASCADE | Video generating revenue |
+| `channel` | ForeignKey(Channel) | NOT NULL, CASCADE | Channel owning the video |
+| `date` | DateField | Indexed | Date of revenue snapshot |
+| `ad_impressions` | IntegerField | Default: 0 | Number of ad impressions served |
+| `ad_revenue_cents` | IntegerField | Default: 0 | Revenue from ads (in cents) |
+| `premium_views` | IntegerField | Default: 0 | Views from premium subscribers |
+| `premium_revenue_cents` | IntegerField | Default: 0 | Revenue from premium views (in cents) |
+| `total_revenue_cents` | IntegerField | Default: 0 | Total revenue for the day (in cents) |
+| `creator_share_percentage` | DecimalField(5,2) | Default: 70.00, Min: 0 | Creator's revenue share percentage |
+| `creator_revenue_cents` | IntegerField | Default: 0 | Creator's earnings after revenue split (in cents) |
+| `created_at` | DateTimeField | Auto | When record was created |
+
+#### Relationships
+- **Video:** Many-to-One via `video` field
+  - Related name: `revenue_shares`
+  - CASCADE delete - removes revenue records when video deleted
+  - One video has multiple daily revenue records
+
+- **Channel:** Many-to-One via `channel` field
+  - Related name: `revenue_shares`
+  - CASCADE delete - removes revenue records when channel deleted
+  - One channel has multiple revenue records across all videos
+
+#### Constraints
+- **Unique Together:** `[video, date]`
+  - One revenue record per video per day
+  - Prevents duplicate daily snapshots
+
+#### Indexes
+- Single index on `date` - Fast date-based filtering
+- Composite index on `(channel, date)` - Channel revenue queries
+- Composite index on `(video, date)` - Video revenue queries
+
+#### Validators
+- **creator_share_percentage:** `MinValueValidator(0)` - Ensures non-negative percentage
+
+#### Meta Options
+- **Ordering:** `["-date"]` - Most recent first
+- **DB Table:** `revenue_shares`
+
+#### Revenue Calculation Logic
+```
+total_revenue_cents = ad_revenue_cents + premium_revenue_cents
+creator_revenue_cents = total_revenue_cents * (creator_share_percentage / 100)
+platform_revenue_cents = total_revenue_cents - creator_revenue_cents
+```
+
+---
+
+### 3. PayoutMethod
+
+**Purpose:** Stores creator payment method configurations for processing payouts securely.
+
+**Table Name:** `payout_methods`
+
+#### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `id` | AutoField | Primary Key | Auto-incrementing unique identifier |
+| `channel` | ForeignKey(Channel) | NOT NULL, CASCADE | Channel owning the payout method |
+| `method_type` | CharField(50) | Choices | Type of payment method |
+| `account_details` | JSONField | NOT NULL | Encrypted account information (JSON) |
+| `is_default` | BooleanField | Default: False | Whether this is the default payment method |
+| `is_verified` | BooleanField | Default: False | Whether payment method is verified |
+| `created_at` | DateTimeField | Auto | When method was added |
+| `updated_at` | DateTimeField | Auto | Last update timestamp |
+
+#### Relationships
+- **Channel:** Many-to-One via `channel` field
+  - Related name: `payout_methods`
+  - CASCADE delete - removes payment methods when channel deleted
+  - One channel can have multiple payment methods
+
+#### Method Type Choices
+
+| Value | Display Name | Description |
+|-------|--------------|-------------|
+| `bank_transfer` | Bank Transfer | Direct bank account transfer |
+| `paypal` | PayPal | PayPal account payment |
+| `mobile_banking` | Mobile Banking | Mobile banking services (e.g., bKash, Nagad) |
+
+#### Account Details Structure (JSONField)
+
+**Note:** Should be encrypted at application level before storage.
+
+**Bank Transfer:**
+```json
+{
+  "account_holder_name": "John Doe",
+  "bank_name": "Example Bank",
+  "account_number": "encrypted_value",
+  "routing_number": "encrypted_value",
+  "swift_code": "EXAMPLEXXX"
+}
+```
+
+**PayPal:**
+```json
+{
+  "email": "encrypted_email@example.com",
+  "account_id": "encrypted_value"
+}
+```
+
+**Mobile Banking:**
+```json
+{
+  "provider": "bKash",
+  "account_number": "encrypted_value",
+  "account_holder_name": "John Doe"
+}
+```
+
+#### Meta Options
+- **Ordering:** `["-is_default", "-created_at"]` - Default method first, then by creation date
+- **DB Table:** `payout_methods`
+
+#### Security Considerations
+- **Encryption Required:** `account_details` must be encrypted before storage
+- **Verification:** `is_verified` flag ensures payment method validity
+- **Default Method:** Only one method should have `is_default=True` per channel
+
+---
+
+## Dependencies
+
+### Required Imports
+```python
+from django.db import models
+from django.core.validators import MinValueValidator
+from .choices import PayoutStatus
+```
+
+### Related Models
+- **Channel:** Creator/channel model
+  - Referenced by: `CreatorPayout`, `RevenueShare`, `PayoutMethod`
+  
+- **Video:** Video content model
+  - Referenced by: `RevenueShare`
+
+### External Dependencies
+- **PayoutStatus:** Enum/TextChoices class defining payout status values
+  - Located in: `.choices` module
+  - Values: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+
+---
+
+## Model Relationships
+
+### Entity Relationship Overview
+
+```
+Channel ──┬──→ CreatorPayout (payouts)
+          ├──→ RevenueShare (revenue_shares)
+          └──→ PayoutMethod (payout_methods)
+
+Video ────→ RevenueShare (revenue_shares)
+```
+
+### Relationship Details
+
+#### **Revenue Flow**
+1. **Video → RevenueShare:** Daily revenue attribution per video
+2. **RevenueShare → Channel:** Aggregated revenue per channel
+3. **Channel → CreatorPayout:** Periodic payout based on accumulated revenue
+
+#### **Payment Processing**
+1. **Channel → PayoutMethod:** Payment method configuration
+2. **PayoutMethod → CreatorPayout:** Selected method for payout execution
+
+#### **Data Aggregation Pattern**
+```
+Daily: Video generates revenue → RevenueShare (daily snapshot)
+Weekly/Monthly: RevenueShare records aggregated → CreatorPayout (periodic)
+```
+
+### Cardinality
+
+| Relationship | Type | Description |
+|--------------|------|-------------|
+| Channel → CreatorPayout | One-to-Many | One channel has multiple payouts over time |
+| Channel → RevenueShare | One-to-Many | One channel has revenue from multiple videos |
+| Video → RevenueShare | One-to-Many | One video has daily revenue records |
+| Channel → PayoutMethod | One-to-Many | One channel can have multiple payment methods |
+
+---
+
+## Payout Lifecycle
+
+### Status Flow
+```
+PENDING → PROCESSING → COMPLETED
+                    ↓
+                  FAILED
+                    ↓
+                CANCELLED
+```
+
+### Timestamp Tracking
+1. **created_at:** Payout record created
+2. **processed_at:** Payment processing initiated
+3. **completed_at:** Payment successfully transferred
+
+### Revenue Calculation Example
+```python
+# Daily revenue attribution
+total_revenue = ad_revenue + premium_revenue
+creator_revenue = total_revenue * (creator_share_percentage / 100)
+
+# Periodic payout calculation
+gross_revenue = sum(creator_revenue for period)
+platform_fee = gross_revenue * platform_fee_rate
+gateway_fee = gross_revenue * gateway_fee_rate
+tax_withheld = gross_revenue * tax_rate
+net_payout = gross_revenue - platform_fee - gateway_fee - tax_withheld
+```
+
+### Currency Handling
+- All monetary values stored in **cents** (smallest currency unit)
+- Prevents floating-point precision errors
+- Convert to dollars/major unit for display: `amount_cents / 100`
+- Support for multiple currencies via ISO 4217 codes
