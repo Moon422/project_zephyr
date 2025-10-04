@@ -1,525 +1,811 @@
-Below is developer-facing documentation for the Django data models found in repomix-output.xml. It is structured for an open-source repository: each model includes purpose, fields, relationships, constraints, indexes, typical operations, and SRS mapping notes. Where relevant, I highlight divergences or confirmations against SRS Section 20 and related sections.
-
-Repository modules
-- user.py: User, SocialAuth, RefreshToken, PasswordResetToken
-- channel.py: Channel, Subscription
-- video.py: Video, VideoVersion, VideoAsset, VideoTag, VideoTagRelation, Subtitle
-- interaction.py: Interaction, WatchSession, Playlist, PlaylistItem
-- comment.py: Comment, CommentReaction
-- moderation.py: Flag, ModerationLog, UserSuspension
-- subscription.py: SubscriptionPlan, UserSubscription, PaymentTransaction, PromotionalCode, PromoCodeUsage
-- payment.py: CreatorPayout, RevenueShare, PayoutMethod
-- analytics.py: TrendingVideo, RecommendationCache, SearchQuery, PopularSearch, ChannelAnalytics, VideoAnalytics, UserWatchHistory
-
-Conventions
-- All model table names are set via Meta.db_table and most include useful composite indexes.
-- Deletions are mostly CASCADE for owned/child data (e.g., comments, assets) and SET_NULL for reviewer links or optional references.
-- Timestamps: created_at present on most records; updated_at on many; soft-delete fields exist on selected models (User, Channel, Video).
-- Choices are centralized in choices.py and used throughout.
-
-1) User and Identity (user.py)
-User
-Purpose: Custom user model with email login, roles, security features, preferences, and soft-delete. Maps to SRS entity User.
-
-Key fields:
-- email (unique, indexed), username (unique, indexed), first_name, last_name, birthdate, avatar_url, bio
-- role (choices: GUEST/VIEWER/CREATOR/MODERATOR/ADMIN/PREMIUM), status (ACTIVE/SUSPENDED/BANNED/PENDING_VERIFICATION/DELETED)
-- Security: mfa_enabled, mfa_secret, failed_login_attempts, locked_until, last_login_ip
-- Preferences: preferred_language (en/bn), email_notifications_enabled
-- Metadata: is_staff, is_active, email_verified, email_verified_at
-- Timestamps: created_at (indexed), updated_at, deleted_at (soft delete)
-
-Relationships:
-- One-to-one Channel via Channel.user (reverse: user.channel)
-- One-to-one UserSubscription via related_name active_subscription
-- Many child relations across the app (comments, flags, interactions, etc.)
-
-Constraints/Indexes:
-- UNIQUE email, username
-- Indexes on (email, status), username, (role, status)
-
-Helpers:
-- full_name (property)
-- is_creator (property; returns True for CREATOR or ADMIN)
-- is_premium (property; delegates to active_subscription.is_active)
-- soft_delete() sets deleted flags and DELETED status
-
-SRS alignment:
-- Matches Section 10 (Auth, MFA, sessions), Section 20 User entity. Age minimum policy (Section 3.2) is not enforced here; implement in application logic/validators.
-
-SocialAuth
-Purpose: OAuth connection records (Google, Facebook, Apple optional). Maps to SRS 10.1 Social logins.
-
-Fields:
-- user (FK), provider, provider_user_id, access_token, refresh_token, expires_at
-Constraints:
-- unique_together (provider, provider_user_id)
-- Index on (user, provider)
-
-RefreshToken
-Purpose: Manage rotating JWT refresh tokens. Maps to SRS 10.3 Sessions.
-
-Fields:
-- user (FK), token (unique, indexed), expires_at, revoked, revoked_at, device_info, ip_address, created_at
-Computed:
-- is_valid property
-Methods:
-- revoke()
-
-PasswordResetToken
-Purpose: Password reset flows. Maps to SRS 10.4 Account Deletion and general auth flows.
-
-Fields:
-- user, token (unique, indexed), expires_at, used, used_at, created_at
-Computed:
-- is_valid property
-
-2) Channels and Subscriptions (channel.py)
-Channel
-Purpose: Creator’s channel profile, quotas, stats, monetization flags. Maps to SRS Channel entity and quota rules (Section 4.3).
-
-Fields:
-- user (OneToOne), name, handle (unique slug, indexed), description
-- Branding: avatar_url, banner_url
-- status (choices: ACTIVE/SUSPENDED/UNDER_REVIEW/DELETED), verified, verified_at
-- Stats: subscriber_count (indexed), total_views, total_videos
-- Monetization: monetization_enabled, monetization_enabled_at
-- Quotas: max_videos_per_week, max_video_duration_minutes, max_file_size_gb
-- Timestamps: created_at (indexed), updated_at, deleted_at
-
-Indexes:
-- handle, (status, verified), subscriber_count
-
-Methods:
-- update_quotas(): applies rules based on subscriber_count (>=1000 unlocks unlimited weekly count, 12h max duration, 50GB file size; else default 10/week, 15m, 2GB)
-- increment_subscriber_count(), decrement_subscriber_count() using F expressions; updates quotas when incrementing
-
-SRS alignment:
-- Implements explicit quotas from SRS 4.3 and upgrade path (R5).
-- Consider admin overrides (SRS 12.1) via the portal; model supports direct edits.
-
-Subscription (Channel subscription by a user)
-Purpose: Follows/subscribe to a Channel; notification preference. Maps to SRS 7.1 subscriptions.
-
-Fields:
-- subscriber (User), channel (Channel), notifications_enabled, subscribed_at
-Constraints:
-- unique_together (subscriber, channel)
-Indexes:
-- (subscriber, channel), (channel, subscribed_at)
-
-3) Video and Media (video.py)
-Video
-Purpose: Core video record with status, visibility, restrictions, stats, and link to active version. Maps to SRS Video entity.
-
-Fields:
-- channel (FK), title, description
-- status (choices VideoStatus; indexed), visibility (PUBLIC/UNLISTED/PREMIUM/PRIVATE)
-- Restriction: age_restricted, geo_restrictions (JSON of country codes)
-- active_version (FK to VideoVersion, nullable)
-- Thumbnails: thumbnail_url, thumbnail_auto_generated
-- Stats: view_count (indexed), like_count, dislike_count, comment_count, share_count
-- Engagement: average_watch_time_seconds, completion_rate (0–100)
-- Metadata: duration_seconds, language
-- Timestamps: published_at (indexed), created_at (indexed), updated_at, deleted_at, last_activity_at
-
-Indexes:
-- (channel, status), (status, visibility, published_at), view_count, -published_at
-
-Methods:
-- publish(): transitions Processing -> Published and sets published_at if active_version present
-- increment_view_count(): F expression increment + last_activity_at update
-Properties:
-- is_published
-
-SRS alignment:
-- Matches Video fields and lifecycle (Section 4), visibility settings (premium only), age restriction.
-
-VideoVersion
-Purpose: Versioning for re-uploads; holds source & transcoding state. Maps to SRS 4.2 Versioning and 24 architecture.
-
-Fields:
-- video (FK), version_number, is_active
-- Source: source_object_key (S3 key), size, duration, resolution, codec
-- Transcoding: profile set, status (TranscodingStatus), started/completed/error
-- created_at
-Constraints/Indexes:
-- unique (video, version_number), index (video, is_active)
-
-VideoAsset
-Purpose: Transcoded variant records for ABR ladder. Maps to SRS 5.2/5.3.
-
-Fields:
-- video_version (FK), resolution (choices: 240p…1440p), bitrate_kbps
-- playlist_url, segment_path_prefix
-- file_size_bytes, codec
-Constraints/Indexes:
-- unique (video_version, resolution), index (video_version, resolution)
-
-VideoTag and VideoTagRelation
-Purpose: Tagging and mapping between videos and tags. Maps to SRS 8.2 Indexed fields (tags).
-
-VideoTag fields:
-- name (unique, indexed), slug (unique), usage_count, created_at
-
-VideoTagRelation fields:
-- video (FK), tag (FK), created_at
-Constraints/Indexes:
-- unique (video, tag), indexes on video and tag
-
-Subtitle
-Purpose: External subtitle tracks per video version. Maps to SRS 6.1 Subtitles.
-
-Fields:
-- video_version (FK), language_code, language_name
-- file_key, file_url, is_published, is_auto_generated
-- created_at, updated_at
-Constraints/Indexes:
-- unique (video_version, language_code), index (video_version, language_code)
-
-4) Interactions, Sessions, Playlists (interaction.py)
-Interaction
-Purpose: Generic record for video interactions: LIKE, DISLIKE, VIEW, NOT_INTERESTED, WATCH_TIME. Maps to SRS 7.1, 7.2, 9.1 signals.
-
-Fields:
-- user (FK nullable for anonymous), video (FK), type (InteractionType), value (seconds for WATCH_TIME; 1/0 flag for like/dislike), session_id (indexed), ip_address, user_agent, timestamp (indexed)
-Indexes:
-- (video, type, timestamp), (user, video, type), session_id
-
-Notes:
-- Model allows multiple records per user/video/type; deduplication logic belongs in services if needed.
-- “Not Interested” covered via InteractionType.
-
-WatchSession
-Purpose: Fine-grained QoE and watch metrics per session. Maps to SRS 13.1 QoE.
-
-Fields:
-- user (nullable), video, session_id (indexed)
-- watch_time_seconds, completion_percentage (Decimal, min 0)
-- QoE: rebuffer_count, rebuffer_duration_seconds, startup_time_ms, average_bitrate_kbps
-- Device/Network: device_type, browser, os, ip_address, country_code
-- Timestamps: started_at, ended_at
-Indexes:
-- (video, started_at), (user, started_at), session_id
-
-Playlist and PlaylistItem
-Purpose: User-created playlists and their items. Maps to SRS 6.1 Playlist, 21. Playlists.
-
-Playlist fields:
-- user, title, description, is_public, created_at, updated_at
-Indexes:
-- (user, is_public)
-
-PlaylistItem fields:
-- playlist, video, position, added_at
-Constraints/Indexes:
-- unique (playlist, video), index (playlist, position)
-
-5) Comments (comment.py)
-Comment
-Purpose: Threaded comments (2 levels: parent and replies). Maps to SRS 7 social and 20 Comment entity.
-
-Fields:
-- video, user, parent (nullable), text
-- status (ACTIVE/FLAGGED/HIDDEN/REMOVED)
-- denormalized counts: like_count, dislike_count, reply_count
-- edited, edited_at
-- created_at (indexed), updated_at, deleted_at
-Indexes:
-- (video, status, created_at), (user, created_at), (parent)
-
-Computed:
-- is_reply property
-
-CommentReaction
-Purpose: Likes/dislikes on comments. Maps to SRS 7.1 comment reactions.
-
-Fields:
-- comment, user, is_like (bool), created_at
-Constraints/Indexes:
-- unique (comment, user), indexes on (comment, is_like), user
-
-6) Moderation (moderation.py)
-Flag
-Purpose: Reports on any content via generic relations; covers videos, comments, users. Maps to SRS 12 moderation rules.
-
-Fields:
-- content_type, object_id, content_object (Generic)
-- user (flagger, nullable), reason (choices FlagReason), reason_detail
-- status (FlagStatus), reviewed_by (User nullable), reviewed_at, review_notes
-- created_at (indexed)
-Indexes:
-- (content_type, object_id), (status, created_at), user
-
-ModerationLog
-Purpose: Audit trail of moderation actions. Maps to SRS 12.3 logging/audit.
-
-Fields:
-- moderator (nullable), content_type/object_id (Generic), action (ModerationAction), reason, related_flag (nullable)
-- duration_days, expires_at
-- created_at (indexed)
-Indexes:
-- (moderator, created_at), (content_type, object_id), (action, created_at)
-
-UserSuspension
-Purpose: Record suspensions with expiry and lifting. Maps to SRS 12 actions.
-
-Fields:
-- user, reason, suspended_by, is_permanent
-- suspended_at, expires_at, lifted_at, lifted_by
-Indexes:
-- (user, suspended_at)
-Computed:
-- is_active property computes active suspension state
-
-7) Subscriptions and Billing (subscription.py)
-SubscriptionPlan
-Purpose: Premium plan catalog. Maps to SRS 11.1 Plans.
-
-Fields:
-- name, plan_type (unique; FREE, PREMIUM_MONTHLY, PREMIUM_ANNUAL)
-- Features: max_resolution (default 1440p), ad_free, premium_content_access, early_access
-- Pricing: price_monthly_cents, price_annual_cents (optional)
-- Display currency, is_active
-- created_at, updated_at
-Ordering: by price_monthly_cents
-
-UserSubscription
-Purpose: A user’s current subscription. Maps to SRS 11.2 Subscriptions.
-
-Fields:
-- user (OneToOne), plan (PROTECT)
-- status (ACTIVE/CANCELLED/EXPIRED/GRACE_PERIOD/SUSPENDED)
-- payment_gateway (SSLCommerz/2Checkout), gateway ids
-- start_date (default now), end_date, renewal_date
-- cancelled_at, cancel_at_period_end
-- grace_period_ends_at
-- created_at, updated_at
-Indexes:
-- (user, status), (status, renewal_date)
-Computed:
-- is_active property honors GRACE_PERIOD window
-
-PaymentTransaction
-Purpose: Gateway transaction ledger. Maps to SRS 11.6 gateways and general billing.
-
-Fields:
-- user, subscription (nullable)
-- payment_gateway, gateway_transaction_id (unique)
-- amount_cents, currency, status (string: pending/completed/failed/refunded)
-- payment_method, failure_reason
-- created_at (indexed), completed_at
-Indexes:
-- (user, status), gateway_transaction_id
-
-PromotionalCode and PromoCodeUsage
-Purpose: Discount codes and their usages. Maps to SRS 11.7 Promotional Codes.
-
-PromotionalCode fields:
-- code (unique, indexed), discount_type (percentage/fixed), discount_value
-- valid_from, valid_until, max_uses, max_uses_per_user, current_uses
-- applicable_plans (M2M), is_active, created_at
-Computed:
-- is_valid property checks time window, active and caps
-
-PromoCodeUsage fields:
-- promo_code, user, transaction (nullable)
-- discount_applied_cents, used_at
-Indexes:
-- (promo_code, user)
-
-8) Payouts and Revenue Attribution (payment.py)
-CreatorPayout
-Purpose: Aggregated payouts per channel and period. Maps to SRS 11.5 Creator Revenue Share and payouts.
-
-Fields:
-- channel, period_start, period_end
-- ad_revenue_cents, premium_revenue_cents, total_revenue_cents
-- platform_fee_cents, payment_gateway_fee_cents, tax_withheld_cents
-- net_payout_cents, currency (default USD)
-- status (PENDING/PROCESSING/COMPLETED/FAILED/CANCELLED)
-- payment_method, payment_reference
-- created_at, processed_at, completed_at
-- notes, failure_reason
-Constraints/Indexes:
-- unique (channel, period_start, period_end)
-- (channel, status), (status, created_at)
-Computed:
-- payout_amount_display
-
-RevenueShare
-Purpose: Per-video daily revenue attribution and creator share computation. Maps to SRS 11.5 and analytics.
-
-Fields:
-- video, channel, date
-- ad_impressions, ad_revenue_cents
-- premium_views, premium_revenue_cents
-- total_revenue_cents
-- creator_share_percentage (default 70.00), creator_revenue_cents
-Constraints/Indexes:
-- unique (video, date), (channel, date), (video, date)
-
-PayoutMethod
-Purpose: Creator payout configuration. Maps to SRS 11.6 gateway-agnostic payout methods.
-
-Fields:
-- channel, method_type (bank_transfer/paypal/mobile_banking)
-- account_details (JSON; should be encrypted in app layer)
-- is_default, is_verified
-- created_at, updated_at
-
-9) Analytics and Recommendations (analytics.py)
-TrendingVideo
-Purpose: Cached trending ranks per date/region/category. Maps to SRS 9 trending, 13 analytics.
-
-Fields:
-- video, rank, score, category, region (default BD), date (indexed), created_at
-Constraints/Indexes:
-- unique (video, date, region); index (date, region, rank)
-
-RecommendationCache
-Purpose: Per-user cached recommendation lists by context. Maps to SRS 9.3 infrastructure design.
-
-Fields:
-- user, video_ids (JSON list), context (home/watch_next/etc.), algorithm_version, score_threshold, expires_at (indexed), created_at, updated_at
-Constraints/Indexes:
-- unique (user, context); indexes on (user, context) and expires_at
-Helpers:
-- get_video_ids(), set_video_ids(video_ids) cap to 50
-
-SearchQuery and PopularSearch
-Purpose: Search telemetry and aggregated popular queries. Maps to SRS 8 search analytics.
-
-SearchQuery fields:
-- user (nullable), query, normalized_query (auto lower/trim on save), result_count
-- clicked_video (nullable), click_position
-- session_id, ip_address
-- created_at (indexed)
-Indexes:
-- (normalized_query, created_at), (user, created_at)
-
-PopularSearch fields:
-- query (unique, indexed), search_count, click_through_rate
-- daily_count, weekly_count, monthly_count, last_searched_at
-Indexes:
-- -search_count, query
-
-ChannelAnalytics and VideoAnalytics
-Purpose: Daily aggregates. Maps to SRS 13.2/13.3/13.1.
-
-ChannelAnalytics fields:
-- channel, date (unique per channel/date)
-- total_views, unique_viewers
-- total_watch_time_seconds, average_view_duration_seconds
-- likes, dislikes, comments, shares
-- new_subscribers, unsubscribers, net_subscriber_change
-- estimated_revenue_cents
-- traffic_source_data (JSON)
-- created_at
-Computed:
-- estimated_revenue ($), average_watch_time_minutes
-
-VideoAnalytics fields:
-- video, date (unique per video/date)
-- views, unique_viewers
-- watch_time_seconds, average_view_duration_seconds, average_percentage_viewed
-- likes, dislikes, comments, shares
-- retention_curve (list of floats per 5% interval)
-- demographics_data, traffic_sources (JSON)
-- estimated_revenue_cents, created_at
-Computed:
-- estimated_revenue ($), engagement_rate, watch_time_hours
-
-UserWatchHistory
-Purpose: Per-user last watch state and completion flag per video (unique). Maps to SRS 9.1 signals and 6.1 playback resume.
-
-Fields:
-- user, video
-- watch_percentage, watch_duration_seconds, completed
-- last_position_seconds
-- watched_at (indexed), updated_at
-Constraints/Indexes:
-- unique (user, video)
-Helpers:
-- mark_completed() if watch_percentage >= 90
-- watch_duration_minutes
-
-10) Cross-cutting index and constraint notes
-- Most high-cardinality queries are covered by composite indexes (e.g., interactions by video/type/time; comments by video/status/time).
-- Many-to-one relations default to CASCADE, which matches UGC lifecycle (deleting a video cascades to comments, assets, analytics records).
-- Unique constraints ensure data integrity for one-to-one-like records (e.g., UserSubscription per user, VideoVersion per video/version number, PlaylistItem uniqueness).
-
-11) SRS mapping summary and divergences
-- Matches SRS Section 20 entities: User, Channel, Video, VideoVersion, VideoAsset, Subtitle, Interaction, Comment, Flag, SubscriptionPlan, UserSubscription, CreatorPayout, RecommendationCache. Additional useful entities exist: Tagging, Playlists, RevenueShare, QoE sessions, Search telemetry, Social auth, Tokens, Moderation logs, Suspensions, Promo codes.
-- Session/Token models (RefreshToken, PasswordResetToken, SocialAuth) implement SRS 10 auth/session/MFA integration points.
-- Monetization aligns with SRS 11; payout threshold/frequency are not encoded in models (should be configuration in app/admin).
-- Age policy/KYC, DMCA retention windows, archival moves are not automatically enforced in models; implement in scheduled jobs/services using last_activity_at, deleted_at, and VideoStatus. The Video.last_activity_at supports archival (SRS 4.1 step 9).
-- Search engine choice (SRS 8.1) is not represented here; these models support telemetry regardless of engine.
-
-12) Usage examples
-Create a user and channel
-- user = User.objects.create_user(email="a@b.com", username="alice", password="secret")
-- channel = Channel.objects.create(user=user, name="Alice TV", handle="alice-tv")
-- channel.update_quotas()
-
-Upload and publish a video
-- v = Video.objects.create(channel=channel, title="My First Vlog", status=VideoStatus.PROCESSING)
-- vv1 = VideoVersion.objects.create(video=v, version_number=1, source_object_key="uploads/uuid.mp4")
-- v.active_version = vv1; v.save(update_fields=["active_version"])
-- v.publish()
-
-Add ABR assets
-- VideoAsset.objects.create(video_version=vv1, resolution=VideoResolution.RES_1080P, bitrate_kbps=4500, playlist_url="https://...", segment_path_prefix="s3://...", file_size_bytes=123456789)
-
-Interactions and analytics
-- Interaction.objects.create(user=user, video=v, type=InteractionType.LIKE, value=1)
-- ws = WatchSession.objects.create(user=user, video=v, session_id="abc123", watch_time_seconds=600, startup_time_ms=1200)
-- UserWatchHistory.objects.update_or_create(user=user, video=v, defaults={"watch_percentage": 95.0, "completed": True})
-
-Commenting
-- c = Comment.objects.create(video=v, user=user, text="Great video!")
-- CommentReaction.objects.create(comment=c, user=user, is_like=True)
-
-Subscriptions
-- plan = SubscriptionPlan.objects.create(name="Premium Monthly", plan_type=SubscriptionPlanType.PREMIUM_MONTHLY, price_monthly_cents=399, price_annual_cents=3599)
-- us = UserSubscription.objects.create(user=user, plan=plan, payment_gateway=PaymentGateway.SSLCOMMERZ, renewal_date=timezone.now() + timedelta(days=30))
-
-Playlists
-- pl = Playlist.objects.create(user=user, title="Watch Later")
-- PlaylistItem.objects.create(playlist=pl, video=v, position=1)
-
-Moderation
-- flag = Flag.objects.create(content_object=v, user=user, reason=FlagReason.SPAM)
-- ModerationLog.objects.create(moderator=None, content_object=v, action=ModerationAction.NO_ACTION, reason="Auto-review passed", related_flag=flag)
-
-Payouts
-- rs = RevenueShare.objects.create(video=v, channel=channel, date=date.today(), ad_impressions=1000, ad_revenue_cents=500, creator_revenue_cents=350)
-- CreatorPayout.objects.create(channel=channel, period_start=date(2025,9,1), period_end=date(2025,9,30), total_revenue_cents=10000, net_payout_cents=7000)
-
-13) Data retention and operational notes
-- Soft deletes: User.deleted_at, Channel.deleted_at, Video.deleted_at. Implement periodic purge/anonymization jobs respecting SRS 10.4 and 13.5.
-- Archival: Use Video.last_activity_at and VideoStatus. For lifecycle moves to Glacier, handle externally; models store metadata only.
-- Unique per-user history: UserWatchHistory ensures one row per (user, video) for resume/recency; update on playback.
-- Quotas: Enforced via Channel.update_quotas and application logic during upload; consider capturing effective quotas in audit logs when changed.
-
-14) Permissions and admin suggestions
-- Use Django admin with list_display filters on status fields and search on handle, title, username, email.
-- Enforce role-based access in services, e.g., only channel owner or admin can modify a Video; moderators write ModerationLog entries.
-- Consider signals or service layer for denormalized counters consistency (e.g., increment/decrement like_count, reply_count).
-
-15) Potential extensions
-- Add unique constraint for one active VideoVersion per Video (currently implied by logic, not enforced).
-- For Interaction likes/dislikes, consider a separate unique constraint to prevent multiple likes per user per video if stored via Interaction instead of a dedicated Like model.
-- Add indexes for frequent listing queries, e.g., Video.visibility combined with published_at.
-- Introduce a Deleted/Removed status timestamp reason in Video for DMCA transparency (SRS 17.3).
-- If guests are restricted to 720p (SRS D16), enforce in playback service; VideoAsset already holds higher variants.
-
-How to consume this documentation
-- Each model above can be turned into ReST/Sphinx or MkDocs pages. I can generate per-model API docs (autodoc) and cross-reference SRS sections inline.
-- If you want, I can produce a docs/ folder with:
-  - models/ per-app pages
-  - ER diagram (Graphviz/pygraphviz) from these models
-  - Migration policy and data retention guide aligned with SRS
-  - QuickStart code snippets and admin usage
-
-If you prefer a specific format (e.g., Markdown files per model, Sphinx, or mkdocstrings with YAML navigation), tell me and I’ll output the docs in that structure.
+# 📚 User Authentication & Identity Models Documentation
+
+**File:** `models/user.py`  
+**Module:** User Authentication & Identity Management  
+**Version:** Project Zephyr MVP
+
+---
+
+## 📋 Overview
+
+This module contains the core authentication and user identity models for the Project Zephyr video streaming platform. It implements a custom user model with enhanced security features including MFA (Multi-Factor Authentication), account lockout mechanisms, soft deletion, and OAuth social login integration.
+
+### Key Responsibilities
+- ✅ User account management and authentication
+- ✅ Role-based access control (Viewer, Creator, Moderator, Admin)
+- ✅ Multi-factor authentication (TOTP)
+- ✅ Social OAuth integration (Google, Facebook, Apple)
+- ✅ JWT refresh token management with revocation
+- ✅ Password reset token handling
+- ✅ Account security (lockout after failed attempts)
+- ✅ Soft deletion with 30-day recovery window
+
+### Related Modules
+- `models/channel.py` - Creator channel management
+- `models/subscription.py` - Premium subscription handling
+- `models/video.py` - Content ownership and permissions
+- `services/auth_service.py` - Authentication business logic
+
+---
+
+## 🔧 Model: `CustomUserManager`
+
+**Purpose:** Custom manager for User model creation with proper email normalization and role assignment.
+
+### Methods
+
+#### `create_user(email, username, password=None, **extra_fields)`
+Creates a standard user account.
+
+**Parameters:**
+- `email` (str): User's email address (required)
+- `username` (str): Unique username (required)
+- `password` (str): Plain text password (will be hashed)
+- `**extra_fields`: Additional user fields
+
+**Returns:** `User` instance
+
+**Raises:** `ValueError` if email or username is missing
+
+**Example:**
+```python
+user = User.objects.create_user(
+    email='creator@example.com',
+    username='awesome_creator',
+    password='SecurePass123!',
+    first_name='John',
+    birthdate='1995-05-15'
+)
+```
+
+#### `create_superuser(email, username, password=None, **extra_fields)`
+Creates an admin user with elevated permissions.
+
+**Auto-sets:**
+- `role` → `UserRole.ADMIN`
+- `is_staff` → `True`
+- `is_superuser` → `True`
+- `status` → `UserStatus.ACTIVE`
+
+**Example:**
+```python
+admin = User.objects.create_superuser(
+    email='admin@zephyr.com',
+    username='admin',
+    password='AdminSecure456!'
+)
+```
+
+---
+
+## 👤 Model: `User`
+
+**Purpose:** Core user model extending Django's `AbstractBaseUser` with platform-specific fields for authentication, profile management, security, and preferences.
+
+**Inherits:** `AbstractBaseUser`, `PermissionsMixin`
+
+### Field Reference
+
+| Field | Type | Description | Constraints | Default |
+|-------|------|-------------|-------------|---------|
+| **Authentication** |
+| `email` | `EmailField` | Primary login identifier | Unique, max 255 chars, indexed | - |
+| `username` | `CharField` | Public display name | Unique, 3-50 chars, indexed | - |
+| `password` | `CharField` | Hashed password (Argon2id) | Inherited from AbstractBaseUser | - |
+| **Profile** |
+| `first_name` | `CharField` | User's first name | Max 100 chars, optional | `''` |
+| `last_name` | `CharField` | User's last name | Max 100 chars, optional | `''` |
+| `birthdate` | `DateField` | Date of birth (age verification) | Optional, nullable | `None` |
+| `avatar_url` | `URLField` | Profile picture URL | Max 500 chars, optional | `''` |
+| `bio` | `TextField` | User biography | Max 500 chars, optional | `''` |
+| **Role & Status** |
+| `role` | `CharField` | User role (see UserRole choices) | Max 20 chars | `VIEWER` |
+| `status` | `CharField` | Account status (see UserStatus) | Max 30 chars | `ACTIVE` |
+| **Security** |
+| `mfa_enabled` | `BooleanField` | MFA activation status | - | `False` |
+| `mfa_secret` | `CharField` | TOTP secret key (encrypted) | Max 32 chars, optional | `''` |
+| `failed_login_attempts` | `IntegerField` | Failed login counter | Min 0 | `0` |
+| `locked_until` | `DateTimeField` | Account lockout expiry | Optional, nullable | `None` |
+| `last_login_ip` | `GenericIPAddressField` | Last successful login IP | IPv4/IPv6, nullable | `None` |
+| **Preferences** |
+| `preferred_language` | `CharField` | UI language preference | Max 5 chars (see LanguageCode) | `ENGLISH` |
+| `email_notifications_enabled` | `BooleanField` | Email notification opt-in | - | `True` |
+| **Metadata** |
+| `is_staff` | `BooleanField` | Django admin access | - | `False` |
+| `is_active` | `BooleanField` | Account active status | - | `True` |
+| `email_verified` | `BooleanField` | Email verification status | - | `False` |
+| `email_verified_at` | `DateTimeField` | Email verification timestamp | Optional, nullable | `None` |
+| `created_at` | `DateTimeField` | Account creation timestamp | Auto, indexed | `now()` |
+| `updated_at` | `DateTimeField` | Last update timestamp | Auto | `now()` |
+| `deleted_at` | `DateTimeField` | Soft deletion timestamp | Nullable | `None` |
+
+### Database Configuration
+
+```python
+USERNAME_FIELD = "email"  # Login with email
+REQUIRED_FIELDS = ["username"]  # Required for createsuperuser
+
+class Meta:
+    db_table = "users"
+    ordering = ["-created_at"]  # Newest first
+```
+
+### Indexes
+
+```python
+indexes = [
+    models.Index(fields=["email", "status"]),     # Login queries
+    models.Index(fields=["username"]),            # Profile lookups
+    models.Index(fields=["role", "status"]),      # Admin filtering
+]
+```
+
+**Performance Notes:**
+- Composite index on `(email, status)` optimizes authentication queries
+- Single-column indexes support unique constraints and fast lookups
+- `created_at` index supports chronological sorting
+
+---
+
+### Properties
+
+#### `full_name`
+**Returns:** User's full name or username as fallback
+
+```python
+user.full_name  # "John Doe" or "awesome_creator"
+```
+
+#### `is_creator`
+**Returns:** `True` if user has creator or admin role
+
+```python
+if user.is_creator:
+    # Allow video upload
+    pass
+```
+
+**Business Rule:** Aligns with SRS requirement that creators can upload content.
+
+#### `is_premium`
+**Returns:** `True` if user has active premium subscription
+
+```python
+if user.is_premium:
+    # Enable 1440p playback
+    # Disable ads
+    pass
+```
+
+**Note:** Checks for related `UserSubscription` with active status.
+
+---
+
+### Methods
+
+#### `soft_delete()`
+Performs soft deletion with 30-day recovery window (per SRS Section 10.4).
+
+**Actions:**
+1. Sets `deleted_at` to current timestamp
+2. Changes `status` to `UserStatus.DELETED`
+3. Sets `is_active` to `False`
+
+```python
+user.soft_delete()
+# User can be recovered within 30 days
+# After 30 days, PII is purged via scheduled job
+```
+
+**Related SRS:** Section 10.4 - Account Deletion
+
+---
+
+### Usage Examples
+
+#### User Registration
+```python
+from django.utils import timezone
+from datetime import date
+
+# Create new viewer account
+user = User.objects.create_user(
+    email='viewer@example.com',
+    username='movie_fan',
+    password='SecurePassword123!',
+    birthdate=date(1998, 3, 20),
+    preferred_language=LanguageCode.BANGLA
+)
+
+# Verify email (simulate verification flow)
+user.email_verified = True
+user.email_verified_at = timezone.now()
+user.save()
+```
+
+#### Upgrade to Creator
+```python
+# User requests creator access
+user.role = UserRole.CREATOR
+user.save()
+
+# Now user can create channel and upload videos
+```
+
+#### Enable MFA
+```python
+import pyotp
+
+# Generate TOTP secret
+secret = pyotp.random_base32()
+user.mfa_secret = secret
+user.mfa_enabled = True
+user.save()
+
+# User scans QR code with authenticator app
+```
+
+#### Account Lockout (Security)
+```python
+# After 5 failed login attempts (per SRS Section 10.2)
+from datetime import timedelta
+
+user.failed_login_attempts += 1
+
+if user.failed_login_attempts >= 5:
+    user.locked_until = timezone.now() + timedelta(minutes=15)
+    user.save()
+    # Exponential backoff on subsequent failures
+```
+
+#### Query Active Creators
+```python
+# Find all active creators for analytics
+active_creators = User.objects.filter(
+    role=UserRole.CREATOR,
+    status=UserStatus.ACTIVE,
+    deleted_at__isnull=True
+)
+```
+
+---
+
+## 🔗 Model: `SocialAuth`
+
+**Purpose:** Manages OAuth social login connections (Google, Facebook, Apple) as per SRS Section 10.1.
+
+### Field Reference
+
+| Field | Type | Description | Constraints |
+|-------|------|-------------|-------------|
+| `user` | `ForeignKey` | Related user account | CASCADE delete, indexed |
+| `provider` | `CharField` | OAuth provider name | Max 50 chars (`google`, `facebook`, `apple`) |
+| `provider_user_id` | `CharField` | Provider's unique user ID | Max 255 chars |
+| `access_token` | `TextField` | OAuth access token (encrypted) | Optional |
+| `refresh_token` | `TextField` | OAuth refresh token (encrypted) | Optional |
+| `expires_at` | `DateTimeField` | Token expiration timestamp | Nullable |
+| `created_at` | `DateTimeField` | Connection creation time | Auto |
+| `updated_at` | `DateTimeField` | Last token refresh time | Auto |
+
+### Database Configuration
+
+```python
+class Meta:
+    db_table = "social_auths"
+    unique_together = [["provider", "provider_user_id"]]  # One account per provider
+    indexes = [
+        models.Index(fields=["user", "provider"]),  # Fast user lookup
+    ]
+```
+
+### Usage Examples
+
+#### Link Google Account
+```python
+# After OAuth callback
+social_auth = SocialAuth.objects.create(
+    user=user,
+    provider='google',
+    provider_user_id='108123456789012345678',
+    access_token='ya29.a0AfH6SMB...',
+    refresh_token='1//0gHdP...',
+    expires_at=timezone.now() + timedelta(hours=1)
+)
+```
+
+#### Check Existing Connections
+```python
+# Prevent duplicate social logins
+existing = SocialAuth.objects.filter(
+    provider='facebook',
+    provider_user_id='1234567890'
+).first()
+
+if existing:
+    # Log in existing user
+    user = existing.user
+else:
+    # Create new user account
+    pass
+```
+
+#### Revoke Social Connection
+```python
+# User wants to unlink Google account
+SocialAuth.objects.filter(
+    user=user,
+    provider='google'
+).delete()
+```
+
+---
+
+## 🎫 Model: `RefreshToken`
+
+**Purpose:** JWT refresh token management with revocation support (per SRS Section 10.3).
+
+**Security Features:**
+- 30-day validity (rotating tokens)
+- Device tracking
+- IP logging
+- Revocation list
+
+### Field Reference
+
+| Field | Type | Description | Constraints |
+|-------|------|-------------|-------------|
+| `user` | `ForeignKey` | Token owner | CASCADE delete, indexed |
+| `token` | `CharField` | Refresh token string | Max 500 chars, unique, indexed |
+| `expires_at` | `DateTimeField` | Token expiration | Required |
+| `revoked` | `BooleanField` | Revocation status | Default `False` |
+| `revoked_at` | `DateTimeField` | Revocation timestamp | Nullable |
+| `device_info` | `CharField` | User agent string | Max 255 chars, optional |
+| `ip_address` | `GenericIPAddressField` | Request IP address | IPv4/IPv6, nullable |
+| `created_at` | `DateTimeField` | Token creation time | Auto |
+
+### Database Configuration
+
+```python
+class Meta:
+    db_table = "refresh_tokens"
+    ordering = ["-created_at"]  # Newest first
+    indexes = [
+        models.Index(fields=["user", "revoked"]),  # Active token queries
+        models.Index(fields=["token"]),            # Fast token lookup
+    ]
+```
+
+### Properties
+
+#### `is_valid`
+**Returns:** `True` if token is not revoked and not expired
+
+```python
+if refresh_token.is_valid:
+    # Issue new access token
+    pass
+else:
+    # Require re-authentication
+    pass
+```
+
+### Methods
+
+#### `revoke()`
+Revokes the refresh token immediately.
+
+```python
+refresh_token.revoke()
+# Sets revoked=True and revoked_at=now()
+```
+
+### Usage Examples
+
+#### Issue Refresh Token
+```python
+from datetime import timedelta
+import secrets
+
+# After successful login
+refresh_token = RefreshToken.objects.create(
+    user=user,
+    token=secrets.token_urlsafe(64),
+    expires_at=timezone.now() + timedelta(days=30),
+    device_info=request.META.get('HTTP_USER_AGENT', ''),
+    ip_address=request.META.get('REMOTE_ADDR')
+)
+```
+
+#### Rotate Refresh Token
+```python
+# When refreshing access token
+old_token.revoke()
+
+new_token = RefreshToken.objects.create(
+    user=user,
+    token=secrets.token_urlsafe(64),
+    expires_at=timezone.now() + timedelta(days=30),
+    device_info=old_token.device_info,
+    ip_address=request.META.get('REMOTE_ADDR')
+)
+```
+
+#### Revoke All User Sessions
+```python
+# User changes password or requests logout from all devices
+RefreshToken.objects.filter(
+    user=user,
+    revoked=False
+).update(
+    revoked=True,
+    revoked_at=timezone.now()
+)
+```
+
+#### Cleanup Expired Tokens (Scheduled Job)
+```python
+# Daily cleanup task
+expired_tokens = RefreshToken.objects.filter(
+    expires_at__lt=timezone.now()
+)
+expired_tokens.delete()
+```
+
+---
+
+## 🔐 Model: `PasswordResetToken`
+
+**Purpose:** Secure password reset token management with single-use validation.
+
+### Field Reference
+
+| Field | Type | Description | Constraints |
+|-------|------|-------------|-------------|
+| `user` | `ForeignKey` | User requesting reset | CASCADE delete |
+| `token` | `CharField` | Reset token (hashed) | Max 100 chars, unique, indexed |
+| `expires_at` | `DateTimeField` | Token expiration (1 hour) | Required |
+| `used` | `BooleanField` | Single-use flag | Default `False` |
+| `used_at` | `DateTimeField` | Usage timestamp | Nullable |
+| `created_at` | `DateTimeField` | Token creation time | Auto |
+
+### Database Configuration
+
+```python
+class Meta:
+    db_table = "password_reset_tokens"
+    ordering = ["-created_at"]
+```
+
+### Properties
+
+#### `is_valid`
+**Returns:** `True` if token is unused and not expired
+
+```python
+if reset_token.is_valid:
+    # Allow password reset
+    pass
+else:
+    # Token expired or already used
+    pass
+```
+
+### Usage Examples
+
+#### Generate Reset Token
+```python
+import secrets
+from datetime import timedelta
+
+# User requests password reset
+token = PasswordResetToken.objects.create(
+    user=user,
+    token=secrets.token_urlsafe(32),
+    expires_at=timezone.now() + timedelta(hours=1)
+)
+
+# Send email with reset link
+send_password_reset_email(user.email, token.token)
+```
+
+#### Validate and Use Token
+```python
+# User clicks reset link
+try:
+    reset_token = PasswordResetToken.objects.get(token=submitted_token)
+    
+    if reset_token.is_valid:
+        # Allow password change
+        user = reset_token.user
+        user.set_password(new_password)
+        user.save()
+        
+        # Mark token as used
+        reset_token.used = True
+        reset_token.used_at = timezone.now()
+        reset_token.save()
+        
+        # Invalidate all refresh tokens (security)
+        RefreshToken.objects.filter(user=user).update(
+            revoked=True,
+            revoked_at=timezone.now()
+        )
+    else:
+        # Token invalid
+        raise ValidationError("Reset link expired or already used")
+        
+except PasswordResetToken.DoesNotExist:
+    raise ValidationError("Invalid reset token")
+```
+
+#### Cleanup Old Tokens (Scheduled Job)
+```python
+# Delete tokens older than 24 hours
+from datetime import timedelta
+
+cutoff = timezone.now() - timedelta(hours=24)
+PasswordResetToken.objects.filter(
+    created_at__lt=cutoff
+).delete()
+```
+
+---
+
+## 🔄 Integration Points
+
+### With Channel Model
+```python
+# User creates a channel (one-to-one relationship)
+from models.channel import Channel
+
+channel = Channel.objects.create(
+    user=user,
+    name=f"{user.username}'s Channel",
+    description="Welcome to my channel!"
+)
+```
+
+### With Subscription Model
+```python
+# Check premium status
+from models.subscription import UserSubscription
+
+if user.is_premium:
+    max_resolution = '1440p'
+else:
+    max_resolution = '1080p'
+```
+
+### With Video Model
+```python
+# Creator uploads video
+from models.video import Video
+
+if user.is_creator:
+    video = Video.objects.create(
+        channel=user.channel,
+        title="My First Video",
+        # ... other fields
+    )
+```
+
+### Authentication Flow
+```python
+# Login with email + password
+from django.contrib.auth import authenticate
+
+user = authenticate(
+    request,
+    username=email,  # USERNAME_FIELD is email
+    password=password
+)
+
+if user and user.mfa_enabled:
+    # Require TOTP verification
+    pass
+```
+
+---
+
+## 📊 Business Rules Summary
+
+### Age Verification (SRS Section 3.2)
+- Minimum registration age: **13 years** (configurable)
+- `birthdate` field required for age-restricted content access
+- Age gate enforced at playback for flagged videos
+
+### Account Security (SRS Section 10.2)
+- **Password Policy:** Min 10 chars, 1 letter + 1 number/symbol
+- **Lockout:** 5 failed attempts → 15 min lock (exponential backoff)
+- **MFA:** TOTP required for monetization-eligible creators
+
+### Session Management (SRS Section 10.3)
+- **Access Token:** 15 min validity (JWT)
+- **Refresh Token:** 30 days (rotating, revocable)
+- Session invalidation on password change
+
+### Soft Deletion (SRS Section 10.4)
+- **Grace Period:** 30 days recovery window
+- **PII Purge:** After 30 days, anonymize analytics
+- Status changes: `ACTIVE` → `DELETED`
+
+### Role Hierarchy
+```
+ADMIN (full access)
+  ├── MODERATOR (content moderation)
+  ├── CREATOR (upload + channel management)
+  └── VIEWER (playback + social interactions)
+```
+
+---
+
+## 🎯 API Endpoint Examples
+
+### User Registration
+```http
+POST /api/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "username": "awesome_user",
+  "password": "SecurePass123!",
+  "birthdate": "1995-08-15",
+  "preferred_language": "bn"
+}
+```
+
+### Login with MFA
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!",
+  "mfa_code": "123456"  // If MFA enabled
+}
+
+Response:
+{
+  "access_token": "eyJhbGc...",
+  "refresh_token": "dGhpc2lz...",
+  "user": { ... }
+}
+```
+
+### Refresh Access Token
+```http
+POST /api/v1/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "dGhpc2lz..."
+}
+```
+
+### Password Reset Request
+```http
+POST /api/v1/auth/password-reset
+Content-Type: application/json
+
+{
+  "email": "user@example.com"
+}
+```
+
+---
+
+## 🔍 Common Queries
+
+### Find Users by Role
+```python
+creators = User.objects.filter(
+    role=UserRole.CREATOR,
+    status=UserStatus.ACTIVE
+).select_related('channel')
+```
+
+### Active Premium Users
+```python
+from models.subscription import UserSubscription
+
+premium_users = User.objects.filter(
+    subscriptions__status='active',
+    subscriptions__end_date__gt=timezone.now()
+).distinct()
+```
+
+### Users with MFA Enabled
+```python
+mfa_users = User.objects.filter(
+    mfa_enabled=True,
+    status=UserStatus.ACTIVE
+).count()
+```
+
+### Recently Registered Users
+```python
+from datetime import timedelta
+
+new_users = User.objects.filter(
+    created_at__gte=timezone.now() - timedelta(days=7)
+).order_by('-created_at')
+```
+
+---
+
+## 🛡️ Security Considerations
+
+### Password Storage
+- Uses **Argon2id** hashing (SRS Section 10.1)
+- Configuration: `memory=256MB, iterations=3, parallelism=2`
+
+### Token Security
+- Refresh tokens stored hashed in database
+- Access tokens signed with RS256 (asymmetric)
+- Tokens include `jti` (JWT ID) for revocation
+
+### PII Protection
+- Sensitive fields encrypted at rest (AES-256)
+- `mfa_secret`, `access_token`, `refresh_token` encrypted
+- Minimal data collection (SRS Section 17.1)
+
+### Rate Limiting
+- Login attempts: 5 per 15 minutes per IP
+- Password reset: 3 requests per hour per email
+- MFA verification: 5 attempts per 5 minutes
+
+---
+
+## 📈 Performance Optimization
+
+### Database Indexes
+```sql
+-- Composite index for login queries
+CREATE INDEX idx_users_email_status ON users(email, status);
+
+-- Username lookups
+CREATE INDEX idx_users_username ON users(username);
+
+-- Admin filtering
+CREATE INDEX idx_users_role_status ON users(role, status);
+
+-- Token lookups
+CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
+CREATE INDEX idx_refresh_tokens_user_revoked ON refresh_tokens(user_id, revoked);
+```
+
+### Query Optimization
+```python
+# Use select_related for foreign keys
+users_with_channels = User.objects.select_related('channel').filter(
+    role=UserRole.CREATOR
+)
+
+# Use prefetch_related for reverse foreign keys
+users_with_tokens = User.objects.prefetch_related('refresh_tokens').all()
+```
+
+---
+
+## ✅ Testing Checklist
+
+- [ ] User registration with valid/invalid data
+- [ ] Email uniqueness constraint
+- [ ] Username uniqueness and length validation
+- [ ] Password hashing (never stored plain text)
+- [ ] MFA setup and verification flow
+- [ ] Account lockout after failed attempts
+- [ ] Soft deletion and recovery
+- [ ] Social auth linking/unlinking
+- [ ] Refresh token rotation
+- [ ] Password reset token expiration
+- [ ] Role-based permission checks
+- [ ] Premium status calculation
+
+---
+
+**Last Updated:** 2025-10-04  
+**SRS Version:** Draft v1  
+**Database Schema Version:** 1.0.0
