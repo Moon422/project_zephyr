@@ -13,6 +13,35 @@ This module contains the core authentication and user management models for the 
 - [PasswordResetToken](#passwordresettoken)
 - [Channel](#channel)
 - [Subscription](#subscription)
+- [Video](#video)
+- [VideoVersion](#videoversion)
+- [VideoAsset](#videoasset)
+- [VideoTag](#videotag)
+- [VideoTagRelation](#videotagrelation)
+- [Subtitle](#subtitle)
+- [Interaction](#interaction)
+- [WatchSession](#watchsession)
+- [Playlist](#playlist)
+- [PlaylistItem](#playlistitem)
+- [Comment](#comment)
+- [CommentReaction](#commentreaction)
+- [SubscriptionPlan](#subscriptionplan)
+- [UserSubscription](#usersubscription)
+- [PaymentTransaction](#paymenttransaction)
+- [PromotionalCode](#promotionalcode)
+- [PromoCodeUsage](#promocodeusage)
+- [Overview](#overview)
+- [Models](#models)
+   - [Flag](#1-flag)
+   - [ModerationLog](#2-moderationlog)
+   - [UserSuspension](#3-usersuspension)
+- [Dependencies](#dependencies)
+   - [Required Imports](#required-imports)
+   - [External Choice Classes](#external-choice-classes)
+   - [Related Models](#related-models)
+- [Model Relationships](#model-relationships)
+- [Use Cases](#use-cases)
+- [Key Features](#key-features)
 
 ---
 
@@ -856,16 +885,6 @@ This module contains comprehensive models for managing video content, including 
 
 ---
 
-## Table of Contents
-- [Video](#video)
-- [VideoVersion](#videoversion)
-- [VideoAsset](#videoasset)
-- [VideoTag](#videotag)
-- [VideoTagRelation](#videotagrelation)
-- [Subtitle](#subtitle)
-
----
-
 ## Video
 
 ### Purpose
@@ -1496,14 +1515,6 @@ The following choice classes must be defined in `choices.py`:
 
 ## Overview
 This module contains models for tracking user interactions, watch sessions, and playlist management. It provides comprehensive analytics capabilities including view tracking, engagement metrics, quality of experience (QoE) measurements, and user-generated content organization through playlists.
-
----
-
-## Table of Contents
-- [Interaction](#interaction)
-- [WatchSession](#watchsession)
-- [Playlist](#playlist)
-- [PlaylistItem](#playlistitem)
 
 ---
 
@@ -2216,12 +2227,6 @@ def get_user_liked_videos(user_id):
 
 ## Overview
 This module implements a comprehensive comment system with threading support, reactions (likes/dislikes), moderation capabilities, and soft deletion. It features a 2-level threading structure (parent comments + replies), denormalized statistics for performance, and flexible moderation workflows.
-
----
-
-## Table of Contents
-- [Comment](#comment)
-- [CommentReaction](#commentreaction)
 
 ---
 
@@ -2976,15 +2981,6 @@ if parent and parent.parent:
 
 ## Overview
 This module implements a comprehensive subscription and payment system supporting multiple pricing tiers, payment gateways, promotional codes, and subscription lifecycle management. It handles recurring billing, grace periods, cancellations, and detailed transaction tracking with multi-currency support.
-
----
-
-## Table of Contents
-- [SubscriptionPlan](#subscriptionplan)
-- [UserSubscription](#usersubscription)
-- [PaymentTransaction](#paymenttransaction)
-- [PromotionalCode](#promotionalcode)
-- [PromoCodeUsage](#promocodeusage)
 
 ---
 
@@ -3979,20 +3975,6 @@ class PaymentGateway(models.TextChoices):
 ---
 
 # Moderation & Flagging Models Documentation
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Models](#models)
-   - 2.1 [Flag](#1-flag)
-   - 2.2 [ModerationLog](#2-moderationlog)
-   - 2.3 [UserSuspension](#3-usersuspension)
-3. [Dependencies](#dependencies)
-   - 3.1 [Required Imports](#required-imports)
-   - 3.2 [External Choice Classes](#external-choice-classes)
-   - 3.3 [Related Models](#related-models)
-4. [Model Relationships](#model-relationships)
-5. [Use Cases](#use-cases)
-6. [Key Features](#key-features)
 
 ---
 
