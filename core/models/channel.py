@@ -1,6 +1,6 @@
 from django.db import models
 from django.core.validators import MinLengthValidator
-from core.choices import ChannelStatus
+from .choices import ChannelStatus
 
 
 class Channel(models.Model):

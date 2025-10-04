@@ -1,5 +1,5 @@
 from django.db import models
-from core.choices import CommentStatus
+from .choices import CommentStatus
 
 
 class Comment(models.Model):

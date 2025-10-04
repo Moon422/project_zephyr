@@ -1,5 +1,4 @@
 from django.db import models
-from django.contrib.postgres.fields import ArrayField
 
 
 class TrendingVideo(models.Model):
@@ -43,8 +42,10 @@ class RecommendationCache(models.Model):
         "User", on_delete=models.CASCADE, related_name="recommendation_caches"
     )
 
-    # Recommended video IDs (stored as array for quick retrieval)
-    video_ids = ArrayField(models.IntegerField(), default=list, size=50)
+    # Recommended video IDs (stored as JSON array for cross-database compatibility)
+    video_ids = models.JSONField(
+        default=list, help_text="List of recommended video IDs (max 50)"
+    )
 
     # Recommendation context
     context = models.CharField(
@@ -72,6 +73,14 @@ class RecommendationCache(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.context}"
+
+    def get_video_ids(self):
+        """Get video IDs as a list"""
+        return self.video_ids if isinstance(self.video_ids, list) else []
+
+    def set_video_ids(self, video_ids):
+        """Set video IDs (limit to 50)"""
+        self.video_ids = list(video_ids)[:50]
 
 
 class SearchQuery(models.Model):
@@ -119,6 +128,12 @@ class SearchQuery(models.Model):
 
     def __str__(self):
         return f"{self.query} - {self.created_at}"
+
+    def save(self, *args, **kwargs):
+        """Auto-normalize query on save"""
+        if not self.normalized_query:
+            self.normalized_query = self.query.lower().strip()
+        super().save(*args, **kwargs)
 
 
 class PopularSearch(models.Model):
@@ -196,6 +211,20 @@ class ChannelAnalytics(models.Model):
     def __str__(self):
         return f"{self.channel.name} - {self.date}"
 
+    @property
+    def estimated_revenue(self):
+        """Get revenue in dollars"""
+        return self.estimated_revenue_cents / 100
+
+    @property
+    def average_watch_time_minutes(self):
+        """Get average watch time in minutes"""
+        return (
+            self.average_view_duration_seconds / 60
+            if self.average_view_duration_seconds
+            else 0
+        )
+
 
 class VideoAnalytics(models.Model):
     """Daily aggregated video analytics"""
@@ -222,7 +251,8 @@ class VideoAnalytics(models.Model):
 
     # Audience retention (stored as JSON array of percentages)
     retention_curve = models.JSONField(
-        default=list, help_text="Audience retention at each 5% interval"
+        default=list,
+        help_text="Audience retention at each 5% interval (list of floats)",
     )
 
     # Demographics
@@ -250,6 +280,24 @@ class VideoAnalytics(models.Model):
 
     def __str__(self):
         return f"{self.video.title} - {self.date}"
+
+    @property
+    def estimated_revenue(self):
+        """Get revenue in dollars"""
+        return self.estimated_revenue_cents / 100
+
+    @property
+    def engagement_rate(self):
+        """Calculate engagement rate"""
+        if self.views == 0:
+            return 0.0
+        total_engagement = self.likes + self.dislikes + self.comments + self.shares
+        return (total_engagement / self.views) * 100
+
+    @property
+    def watch_time_hours(self):
+        """Get watch time in hours"""
+        return self.watch_time_seconds / 3600 if self.watch_time_seconds else 0
 
 
 class UserWatchHistory(models.Model):
@@ -284,3 +332,14 @@ class UserWatchHistory(models.Model):
 
     def __str__(self):
         return f"{self.user.username} watched {self.video.title}"
+
+    def mark_completed(self):
+        """Mark video as completed if watch percentage > 90%"""
+        if self.watch_percentage >= 90.0:
+            self.completed = True
+            self.save(update_fields=["completed"])
+
+    @property
+    def watch_duration_minutes(self):
+        """Get watch duration in minutes"""
+        return self.watch_duration_seconds / 60 if self.watch_duration_seconds else 0

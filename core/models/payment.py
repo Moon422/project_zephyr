@@ -1,6 +1,6 @@
 from django.db import models
 from django.core.validators import MinValueValidator
-from core.choices import PayoutStatus
+from .choices import PayoutStatus
 
 
 class CreatorPayout(models.Model):

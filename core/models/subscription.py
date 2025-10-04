@@ -1,7 +1,7 @@
 from django.db import models
 from django.core.validators import MinValueValidator
 from django.utils import timezone
-from core.choices import SubscriptionPlanType, SubscriptionStatus, PaymentGateway
+from .choices import SubscriptionPlanType, SubscriptionStatus, PaymentGateway
 
 
 class SubscriptionPlan(models.Model):

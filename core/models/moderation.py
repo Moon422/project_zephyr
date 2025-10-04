@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from core.choices import FlagReason, FlagStatus, ModerationAction
+from .choices import FlagReason, FlagStatus, ModerationAction
 
 
 class Flag(models.Model):

@@ -1,6 +1,6 @@
 from django.db import models
 from django.core.validators import MinValueValidator
-from core.choices import InteractionType
+from .choices import InteractionType
 
 
 class Interaction(models.Model):
