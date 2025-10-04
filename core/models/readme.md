@@ -412,3 +412,441 @@ The following choice classes must be defined in `choices.py`:
 4. Clean up expired and used tokens periodically
 5. Log IP addresses for security auditing
 6. Verify email addresses before allowing full account access
+
+---
+
+# Channel Management Models Documentation
+
+## Overview
+This module contains models for managing content creator channels and user subscriptions in the video streaming platform. It handles channel profiles, branding, statistics, monetization settings, upload quotas, and subscriber relationships.
+
+---
+
+## Table of Contents
+- [Channel](#channel)
+- [Subscription](#subscription)
+
+---
+
+## Channel
+
+### Purpose
+Represents a content creator's channel on the platform. Each channel is owned by a user with creator privileges and serves as the primary container for organizing videos, managing branding, tracking statistics, and controlling monetization settings. The model implements dynamic quota systems based on subscriber milestones.
+
+### Class Definition
+```python
+class Channel(models.Model)
+```
+
+### Fields
+
+#### **Relationship Fields**
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `user` | OneToOneField | CASCADE, related_name='channel' | Channel owner (one channel per user) |
+
+#### **Channel Information**
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `name` | CharField | max_length=100, min_length=3 | Display name of the channel |
+| `handle` | SlugField | unique, max_length=50, indexed | Unique channel identifier (e.g., @channelname) |
+| `description` | TextField | max_length=5000, optional | Channel description/about section |
+
+#### **Branding Fields**
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `avatar_url` | URLField | max_length=500, optional | Channel profile picture URL |
+| `banner_url` | URLField | max_length=500, optional | Channel banner/cover image URL |
+
+#### **Status Fields**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `status` | CharField | `ChannelStatus.ACTIVE` | Channel status (ACTIVE, SUSPENDED, etc.) |
+| `verified` | BooleanField | False | Verification badge status |
+| `verified_at` | DateTimeField | null | Verification timestamp |
+
+#### **Statistics Fields (Denormalized)**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `subscriber_count` | IntegerField | 0, indexed | Total number of subscribers |
+| `total_views` | BigIntegerField | 0 | Cumulative view count across all videos |
+| `total_videos` | IntegerField | 0 | Total number of published videos |
+
+> **Note:** These statistics are denormalized for performance optimization and should be kept in sync with actual data.
+
+#### **Monetization Fields**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `monetization_enabled` | BooleanField | False | Monetization eligibility status |
+| `monetization_enabled_at` | DateTimeField | null | Monetization activation timestamp |
+
+#### **Quota Fields**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_videos_per_week` | IntegerField | 10 | Weekly video upload limit |
+| `max_video_duration_minutes` | IntegerField | 15 | Maximum video duration in minutes |
+| `max_file_size_gb` | IntegerField | 2 | Maximum file size in gigabytes |
+
+> **Quota Tiers:**
+> - **Standard** (< 1,000 subscribers): 10 videos/week, 15 min duration, 2 GB file size
+> - **Premium** (≥ 1,000 subscribers): Unlimited videos, 720 min (12 hours) duration, 50 GB file size
+
+#### **Metadata Fields**
+| Field | Type | Description |
+|-------|------|-------------|
+| `created_at` | DateTimeField | Channel creation timestamp (auto, indexed) |
+| `updated_at` | DateTimeField | Last update timestamp (auto) |
+| `deleted_at` | DateTimeField | Soft delete timestamp |
+
+### Configuration
+
+**Meta Options:**
+- **Database Table:** `channels`
+- **Default Ordering:** 
+  - `-subscriber_count` (most subscribers first)
+  - `-created_at` (newest first as secondary)
+- **Indexes:**
+  - `(handle)` - Fast channel lookup by handle
+  - `(status, verified)` - Filter verified/active channels
+  - `(subscriber_count)` - Sort by popularity
+
+### Methods
+
+#### `update_quotas()`
+Dynamically updates upload quotas based on subscriber count milestones.
+
+**Logic:**
+- **≥ 1,000 subscribers:** Unlocks premium tier quotas
+- **< 1,000 subscribers:** Standard tier quotas
+
+**Side Effects:**
+- Updates `max_videos_per_week`, `max_video_duration_minutes`, `max_file_size_gb`
+- Saves the model instance
+
+**Example:**
+```python
+channel.subscriber_count = 1500
+channel.update_quotas()
+# Now: unlimited videos, 720 min duration, 50 GB file size
+```
+
+#### `increment_subscriber_count()`
+Atomically increments subscriber count and updates quotas if milestone reached.
+
+**Features:**
+- Uses `F()` expression for atomic database-level increment (prevents race conditions)
+- Refreshes model from database after update
+- Automatically triggers quota update
+
+**Example:**
+```python
+# User subscribes to channel
+subscription = Subscription.objects.create(
+    subscriber=user,
+    channel=channel
+)
+channel.increment_subscriber_count()
+```
+
+**Thread-Safe:** ✅ Yes (uses database-level atomic operations)
+
+#### `decrement_subscriber_count()`
+Atomically decrements subscriber count when user unsubscribes.
+
+**Features:**
+- Uses `F()` expression for atomic database-level decrement
+- Refreshes model from database after update
+
+**Example:**
+```python
+# User unsubscribes
+subscription.delete()
+channel.decrement_subscriber_count()
+```
+
+**Thread-Safe:** ✅ Yes (uses database-level atomic operations)
+
+> **⚠️ Note:** Decrement does not automatically downgrade quotas. Consider implementing quota checks on milestone drops if needed.
+
+#### `__str__()`
+String representation of the channel.
+
+**Returns:** `"{name} (@{handle})"`
+
+**Example:**
+```python
+str(channel)  # "Tech Reviews (@techreviews)"
+```
+
+### Usage Examples
+
+#### Creating a New Channel
+```python
+from django.utils.text import slugify
+
+channel = Channel.objects.create(
+    user=creator_user,
+    name="Tech Reviews",
+    handle=slugify("techreviews"),
+    description="Daily tech product reviews and tutorials",
+    avatar_url="https://cdn.example.com/avatars/techreviews.jpg",
+    banner_url="https://cdn.example.com/banners/techreviews.jpg"
+)
+```
+
+#### Verifying a Channel
+```python
+from django.utils import timezone
+
+channel.verified = True
+channel.verified_at = timezone.now()
+channel.save()
+```
+
+#### Enabling Monetization
+```python
+from django.utils import timezone
+
+if channel.subscriber_count >= 1000 and channel.total_views >= 4000:
+    channel.monetization_enabled = True
+    channel.monetization_enabled_at = timezone.now()
+    channel.save()
+```
+
+#### Checking Upload Quotas
+```python
+# Check if creator can upload
+if channel.total_videos_this_week < channel.max_videos_per_week:
+    if video_duration <= channel.max_video_duration_minutes:
+        if file_size_gb <= channel.max_file_size_gb:
+            # Allow upload
+            pass
+```
+
+---
+
+## Subscription
+
+### Purpose
+Manages the many-to-many relationship between users (subscribers) and channels. Tracks subscription timestamps and notification preferences for personalized content delivery.
+
+### Class Definition
+```python
+class Subscription(models.Model)
+```
+
+### Fields
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `subscriber` | ForeignKey | CASCADE, related_name='subscriptions' | User who subscribed |
+| `channel` | ForeignKey | CASCADE, related_name='subscribers' | Channel being subscribed to |
+| `notifications_enabled` | BooleanField | default=True | Push/email notification preference |
+| `subscribed_at` | DateTimeField | auto, indexed | Subscription creation timestamp |
+
+### Configuration
+
+**Meta Options:**
+- **Database Table:** `channel_subscriptions`
+- **Unique Together:** `(subscriber, channel)` - Prevents duplicate subscriptions
+- **Default Ordering:** `-subscribed_at` (newest first)
+- **Indexes:**
+  - `(subscriber, channel)` - Fast subscription lookup
+  - `(channel, subscribed_at)` - Chronological subscriber list
+
+### Methods
+
+#### `__str__()`
+String representation of the subscription relationship.
+
+**Returns:** `"{subscriber_username} -> {channel_name}"`
+
+**Example:**
+```python
+str(subscription)  # "johndoe -> Tech Reviews"
+```
+
+### Usage Examples
+
+#### Creating a Subscription
+```python
+# User subscribes to a channel
+subscription = Subscription.objects.create(
+    subscriber=user,
+    channel=channel
+)
+
+# Update channel's subscriber count
+channel.increment_subscriber_count()
+```
+
+#### Unsubscribing
+```python
+# Find and delete subscription
+subscription = Subscription.objects.get(
+    subscriber=user,
+    channel=channel
+)
+subscription.delete()
+
+# Update channel's subscriber count
+channel.decrement_subscriber_count()
+```
+
+#### Toggling Notifications
+```python
+subscription = user.subscriptions.get(channel=channel)
+subscription.notifications_enabled = False
+subscription.save()
+```
+
+#### Querying User's Subscriptions
+```python
+# Get all channels user is subscribed to
+subscribed_channels = Channel.objects.filter(
+    subscribers__subscriber=user
+).order_by('-subscribers__subscribed_at')
+
+# Get subscription count
+subscription_count = user.subscriptions.count()
+
+# Check if user is subscribed to specific channel
+is_subscribed = user.subscriptions.filter(channel=channel).exists()
+```
+
+#### Querying Channel's Subscribers
+```python
+# Get all subscribers of a channel
+subscribers = User.objects.filter(
+    subscriptions__channel=channel
+).order_by('-subscriptions__subscribed_at')
+
+# Get recent subscribers (last 30 days)
+from django.utils import timezone
+from datetime import timedelta
+
+recent_subscribers = channel.subscribers.filter(
+    subscribed_at__gte=timezone.now() - timedelta(days=30)
+)
+
+# Get subscribers with notifications enabled
+notified_subscribers = channel.subscribers.filter(
+    notifications_enabled=True
+)
+```
+
+---
+
+## Dependencies
+
+### Required Imports
+```python
+from django.db import models
+from django.core.validators import MinLengthValidator
+from .choices import ChannelStatus
+```
+
+### External Choice Classes
+The following choice class must be defined in `choices.py`:
+- **ChannelStatus**: Channel status options (ACTIVE, SUSPENDED, DELETED, etc.)
+
+### Related Models
+- **User**: From authentication models (OneToOne relationship with Channel)
+
+---
+
+## Business Logic & Rules
+
+### Channel Creation Rules
+1. Only users with `CREATOR` or `ADMIN` role can create channels
+2. Each user can have only **one** channel (enforced by OneToOneField)
+3. Channel handle must be unique across the platform
+4. Handle should follow slug format (lowercase, alphanumeric, hyphens)
+
+### Subscription Rules
+1. Users cannot subscribe to their own channel
+2. Each user-channel pair can only have one active subscription
+3. Deleting a channel cascades to delete all subscriptions
+4. Deleting a user cascades to delete all their subscriptions
+
+### Quota System Rules
+1. **Standard Tier** (< 1,000 subscribers):
+   - 10 videos per week
+   - 15 minutes max duration
+   - 2 GB max file size
+
+2. **Premium Tier** (≥ 1,000 subscribers):
+   - Unlimited videos per week
+   - 720 minutes (12 hours) max duration
+   - 50 GB max file size
+
+3. Quota upgrades happen automatically when reaching 1,000 subscribers
+4. Consider implementing quota downgrade logic if subscriber count drops
+
+### Monetization Eligibility
+Typical requirements (implement in business logic):
+- Minimum 1,000 subscribers
+- Minimum 4,000 watch hours in past 12 months
+- Channel in good standing (no strikes)
+- Adherence to platform policies
+
+---
+
+## Performance Considerations
+
+### Denormalized Statistics
+The `subscriber_count`, `total_views`, and `total_videos` fields are denormalized for query performance. Ensure these are kept in sync:
+
+```python
+# When video is published
+channel.total_videos = models.F('total_videos') + 1
+channel.save()
+
+# When video receives views
+channel.total_views = models.F('total_views') + view_count
+channel.save()
+```
+
+### Atomic Operations
+Always use `F()` expressions for counter updates to prevent race conditions:
+
+```python
+# ✅ Good - Atomic
+channel.subscriber_count = models.F('subscriber_count') + 1
+channel.save()
+
+# ❌ Bad - Race condition possible
+channel.subscriber_count += 1
+channel.save()
+```
+
+### Index Usage
+Queries are optimized with indexes on:
+- `handle` - Channel lookups by URL
+- `subscriber_count` - Popular channels sorting
+- `(status, verified)` - Filtering active/verified channels
+- `(subscriber, channel)` - Subscription lookups
+
+---
+
+## Best Practices
+
+1. **Always update subscriber counts atomically** using `increment_subscriber_count()` and `decrement_subscriber_count()`
+2. **Validate handle format** before creating channels (use `slugify()`)
+3. **Check quotas before allowing uploads** to prevent exceeding limits
+4. **Keep denormalized stats in sync** with actual data
+5. **Use soft delete** for channels (set `deleted_at`) to preserve historical data
+6. **Implement periodic cleanup** of orphaned subscriptions
+7. **Cache popular channel data** to reduce database load
+8. **Send notifications** to subscribers when new content is published (if `notifications_enabled=True`)
+
+---
+
+## Security Considerations
+
+1. **Validate channel ownership** before allowing modifications
+2. **Rate limit subscription actions** to prevent spam
+3. **Sanitize channel descriptions** to prevent XSS attacks
+4. **Verify URLs** for avatar and banner to prevent malicious content
+5. **Implement abuse reporting** for channels violating policies
+6. **Log quota changes** for audit purposes
