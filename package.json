@@ -20,6 +20,7 @@
   "homepage": "https://github.com/Moon422/project_zephyr#readme",
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.14",
+    "jquery": "^3.7.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.14"
   },
