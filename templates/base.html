@@ -16,23 +16,24 @@
     {% block header_scripts %} {% endblock header_scripts %}
 </head>
 
-<body class="bg-base text-white min-h-screen flex items-center justify-center p-4">
-    <main>
-        {% block content %} {% endblock content %}
+<body class="bg-background text-foreground antialiased">
+    {% block header %}
+    {% include 'components/header.html' %}
+    {% endblock %}
+
+    <main class="min-h-screen">
+        {% block content %}{% endblock %}
     </main>
 
-    {% if debug %}
-    <!-- Development: Vite Dev Server -->
-    <script type="module" src="http://localhost:5173/@vite/client"></script>
-    <script type="module" src="http://localhost:5173/static/src/main.js"></script>
-    {% else %}
+    {% block footer %}
+    {% include 'components/footer.html' %}
+    {% endblock %}
+
     <script type="module" src="{% static 'dist/js/main.js' %}"></script>
-    {% endif %}
 
-    {% block footer_scripts %} {% endblock footer_scripts %}
+    {% block extra_script_files %}{% endblock %}
 
-
-    {% block footer_file_scripts %} {% endblock footer_file_scripts %}
+    {% block extra_scripts %}{% endblock %}
 </body>
 
 </html>
