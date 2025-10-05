@@ -24,6 +24,10 @@
   "homepage": "https://github.com/Moon422/project_zephyr#readme",
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.14",
+    "gulp": "^5.0.1",
+    "gulp-filter": "^9.0.1",
+    "gulp-rename": "^2.1.0",
+    "gulp-zip": "^6.1.0",
     "jquery": "^3.7.1",
     "postcss": "^8.5.6"
   },
@@ -31,8 +35,6 @@
     "@tailwindcss/vite": "^4.1.14",
     "postcss-cli": "^11.0.1",
     "tailwindcss": "^4.1.14",
-    "tw-animate-css": "^1.4.0",
-    "vite": "^7.1.9",
-    "vite-plugin-static-copy": "^3.1.3"
+    "tw-animate-css": "^1.4.0"
   }
 }
