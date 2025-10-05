@@ -10,6 +10,17 @@
         {% block title %}Project Zephyr{% endblock title %}
     </title>
 
+    <link rel="stylesheet" href="{% static 'css/base.css' %}">
+    <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+
+    {% block header_scripts %} {% endblock header_scripts %}
+</head>
+
+<body class="bg-base text-white min-h-screen flex items-center justify-center p-4">
+    <main>
+        {% block content %} {% endblock content %}
+    </main>
+
     {% if debug %}
     <!-- Development: Vite Dev Server -->
     <script type="module" src="http://localhost:5173/@vite/client"></script>
@@ -18,14 +29,10 @@
     <script type="module" src="{% static 'dist/js/main.js' %}"></script>
     {% endif %}
 
-    <link rel="stylesheet" href="{% static 'css/base.css' %}">
-    <link rel="stylesheet" href="{% static 'css/styles.css' %}">
-</head>
+    {% block footer_scripts %} {% endblock footer_scripts %}
 
-<body>
-    <main>
-        {% block content %}{% endblock content %}
-    </main>
+
+    {% block footer_file_scripts %} {% endblock footer_file_scripts %}
 </body>
 
 </html>
