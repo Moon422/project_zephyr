@@ -1,11 +1,15 @@
 {
   "name": "project_zephyr",
   "version": "1.0.0",
+  "type": "module",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "postcss static/css/input/base.css -o static/css/base.css --watch",
-    "build": "postcss static/css/input/base.css -o static/css/base.css"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "css": "postcss static/css/input/base.css -o static/css/base.css --watch",
+    "css-build": "postcss static/css/input/base.css -o static/css/base.css"
   },
   "repository": {
     "type": "git",
