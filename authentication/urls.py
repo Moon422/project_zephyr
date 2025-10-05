@@ -5,5 +5,5 @@ from .views import test, LoginView
 urlpatterns = [
     path("", test, name="app_home"),
     path("test/", test),
-    path("login/", LoginView.as_view()),
+    path("login/", LoginView.as_view(), name="auth_login"),
 ]

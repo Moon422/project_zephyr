@@ -161,28 +161,3 @@
         </nav>
     </div>
 </header>
-
-<script>
-    $(document).ready(function () {
-        // User menu toggle
-        $('#user-menu-button').click(function (e) {
-            e.stopPropagation();
-            $('#user-menu-dropdown').toggleClass('hidden');
-        });
-
-        // Close dropdown when clicking outside
-        $(document).click(function () {
-            $('#user-menu-dropdown').addClass('hidden');
-        });
-
-        // Mobile menu toggle
-        $('#mobile-menu-toggle').click(function () {
-            $('#mobile-menu').toggleClass('hidden');
-        });
-
-        // Mobile search toggle
-        $('#mobile-search-toggle').click(function () {
-            $('#mobile-search').toggleClass('hidden');
-        });
-    });
-</script>

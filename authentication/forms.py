@@ -6,7 +6,12 @@ class LoginForm(forms.Form):
         max_length=255,
         label="Email",
         widget=forms.EmailInput(
-            attrs={"class": "glass-input w-full", "placeholder": "Enter your email"}
+            attrs={
+                "class": "w-full px-4 py-3 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-primary",
+                "placeholder": "Enter your email",
+                "id": "email",
+                "name": "email",
+            }
         ),
     )
 
@@ -14,11 +19,23 @@ class LoginForm(forms.Form):
         min_length=6,
         label="Password",
         widget=forms.PasswordInput(
-            attrs={"class": "glass-input w-full", "placeholder": "Enter your password"}
+            attrs={
+                "class": "w-full px-4 py-3 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-primary",
+                "placeholder": "Enter your password",
+                "id": "password",
+                "name": "password",
+            }
         ),
     )
 
     remember_me = forms.BooleanField(
         label="Remember me",
-        widget=forms.CheckboxInput(attrs={"class": "w-4 h-4 rounded"}),
+        required=False,
+        widget=forms.CheckboxInput(
+            attrs={
+                "class": "mr-2",
+                "id": "remember_me",
+                "name": "remember_me",
+            }
+        ),
     )

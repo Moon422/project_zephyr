@@ -29,7 +29,33 @@
     {% include 'components/footer.html' %}
     {% endblock %}
 
-    <script type="module" src="{% static 'dist/js/main.js' %}"></script>
+    <script src="{% static 'lib/jquery/jquery.min.js' %}"></script>
+
+    <!-- Header script -->
+    <script>
+        $(function () {
+            // User menu toggle
+            $('#user-menu-button').click(function (e) {
+                e.stopPropagation();
+                $('#user-menu-dropdown').toggleClass('hidden');
+            });
+
+            // Close dropdown when clicking outside
+            $(document).click(function () {
+                $('#user-menu-dropdown').addClass('hidden');
+            });
+
+            // Mobile menu toggle
+            $('#mobile-menu-toggle').click(function () {
+                $('#mobile-menu').toggleClass('hidden');
+            });
+
+            // Mobile search toggle
+            $('#mobile-search-toggle').click(function () {
+                $('#mobile-search').toggleClass('hidden');
+            });
+        });
+    </script>
 
     {% block extra_script_files %}{% endblock %}
 
