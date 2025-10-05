@@ -30,7 +30,6 @@
     "postcss": "^8.5.6"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.14",
     "merge2": "^1.4.1",
     "postcss-cli": "^11.0.1",
     "tailwindcss": "^4.1.14",
