@@ -1,0 +1,29 @@
+{
+  "name": "project_zephyr",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "postcss static/css/input/base.css -o static/css/base.css --watch",
+    "build": "postcss static/css/input/base.css -o static/css/base.css"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Moon422/project_zephyr.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Moon422/project_zephyr/issues"
+  },
+  "homepage": "https://github.com/Moon422/project_zephyr#readme",
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.1.14",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.14"
+  },
+  "devDependencies": {
+    "postcss-cli": "^11.0.1"
+  }
+}
